@@ -1,0 +1,18 @@
+# Output artefacts
+/out/
+*.egg-info/
+build/
+dist/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store

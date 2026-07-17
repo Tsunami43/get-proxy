@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "getproxy"
+version = "0.1.0"
+description = "Collect and check fresh free proxies from 17+ public sources, stdlib only"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Tsunami43" }]
+keywords = [
+    "proxy", "proxy-list", "free-proxy", "proxy-checker", "proxy-scraper",
+    "socks5", "socks4", "http-proxy", "socks5-proxy", "cli", "tui",
+]
+dependencies = []  # zero third-party dependencies — standard library only
+
+[project.urls]
+Homepage = "https://github.com/Tsunami43/getproxy"
+
+[project.scripts]
+getproxy = "getproxy.cli:main"
+
+[tool.setuptools]
+packages = ["getproxy"]
