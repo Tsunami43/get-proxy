@@ -8,6 +8,7 @@ the latency and whether the proxy hides the real address.
 
 from __future__ import annotations
 
+import json
 import re
 import socket
 import time
@@ -20,11 +21,17 @@ from urllib.parse import urlsplit
 
 from .proxy import Protocol, Proxy, Result, is_ipv4
 
-_USER_AGENT = "getproxy/0.1 (+https://github.com/Tsunami43/getproxy)"
+_USER_AGENT = "getproxy/0.2 (+https://github.com/Tsunami43/getproxy)"
 _IPV4_RE = re.compile(rb"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
-# Default judge: echoes a bare IPv4 in the response body over plain HTTP.
-DEFAULT_JUDGE = "http://api.ipify.org/"
+# Default judge: ip-api.com returns JSON with query (IP) and countryCode. The
+# request goes THROUGH the proxy, so the country is that of the exit node — just
+# what the country filter needs. ip-api's rate limit is keyed by the requesting
+# IP (the proxy IP), so the shared limit does not get in our way.
+DEFAULT_JUDGE = "http://ip-api.com/json/?fields=status,query,countryCode,country"
+
+# Fallback judge without geo data — echoes a bare IPv4.
+FALLBACK_JUDGE = "http://api.ipify.org/"
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +66,23 @@ def _extract_ip(body: bytes) -> str:
     return ""
 
 
+def _parse_body(body: bytes) -> tuple[str, str, str]:
+    """Parse a judge body into (ip, country_code, country).
+
+    Understands ip-api JSON ({"query","countryCode","country"}) and plain text
+    with a bare IP (ipify). Country stays empty when the judge does not provide it.
+    """
+    text = body.strip()
+    if text[:1] == b"{":
+        try:
+            d = json.loads(text)
+            ip = d.get("query") or _extract_ip(body)
+            return ip, (d.get("countryCode") or ""), (d.get("country") or "")
+        except Exception:
+            pass
+    return _extract_ip(body), "", ""
+
+
 def local_ip(judge: Judge, timeout: float) -> str:
     """Resolve our real external IP directly (no proxy) for comparison.
 
@@ -68,7 +92,7 @@ def local_ip(judge: Judge, timeout: float) -> str:
     try:
         req = urllib.request.Request(judge.url, headers={"User-Agent": _USER_AGENT})
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-            return _extract_ip(resp.read(4096))
+            return _parse_body(resp.read(8192))[0]
     except Exception:
         return ""
 
@@ -117,8 +141,8 @@ def _socks4_connect(sock: socket.socket, host: str, port: int) -> None:
         raise OSError(f"socks4: CONNECT refused (code {rep[1]})")
 
 
-def _check_socks(proxy: Proxy, judge: Judge, timeout: float) -> str:
-    """Send a judge request through a SOCKS proxy, return the exit IP."""
+def _check_socks(proxy: Proxy, judge: Judge, timeout: float) -> tuple[str, str, str]:
+    """Send a judge request through a SOCKS proxy, return (ip, cc, country)."""
     with socket.create_connection((proxy.host, proxy.port), timeout=timeout) as sock:
         sock.settimeout(timeout)
         if proxy.protocol is Protocol.SOCKS5:
@@ -145,17 +169,17 @@ def _check_socks(proxy: Proxy, judge: Judge, timeout: float) -> str:
     head, _, body = bytes(data).partition(b"\r\n\r\n")
     if not body:
         raise OSError("empty judge response over socks")
-    return _extract_ip(body)
+    return _parse_body(body)
 
 
-def _check_http(proxy: Proxy, judge: Judge, timeout: float) -> str:
-    """Send a judge request through an HTTP proxy, return the exit IP."""
+def _check_http(proxy: Proxy, judge: Judge, timeout: float) -> tuple[str, str, str]:
+    """Send a judge request through an HTTP proxy, return (ip, cc, country)."""
     proxy_url = f"http://{proxy.addr}"
     handler = urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
     opener = urllib.request.build_opener(handler)
     req = urllib.request.Request(judge.url, headers={"User-Agent": _USER_AGENT})
     with opener.open(req, timeout=timeout) as resp:  # noqa: S310
-        return _extract_ip(resp.read(4096))
+        return _parse_body(resp.read(8192))
 
 
 def check_one(proxy: Proxy, judge: Judge, timeout: float, my_ip: str = "") -> Result:
@@ -164,9 +188,9 @@ def check_one(proxy: Proxy, judge: Judge, timeout: float, my_ip: str = "") -> Re
     started = time.monotonic()
     try:
         if proxy.protocol is Protocol.HTTP:
-            exit_ip = _check_http(proxy, judge, timeout)
+            exit_ip, cc, country = _check_http(proxy, judge, timeout)
         else:
-            exit_ip = _check_socks(proxy, judge, timeout)
+            exit_ip, cc, country = _check_socks(proxy, judge, timeout)
     except Exception as exc:
         result.error = f"{type(exc).__name__}: {exc}"
         return result
@@ -178,6 +202,8 @@ def check_one(proxy: Proxy, judge: Judge, timeout: float, my_ip: str = "") -> Re
 
     result.ok = True
     result.exit_ip = exit_ip
+    result.country_code = cc
+    result.country = country
     result.anonymous = bool(my_ip) and exit_ip != my_ip
     return result
 
