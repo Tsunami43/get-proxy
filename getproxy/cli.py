@@ -1,4 +1,8 @@
-"""Argument parsing and the getproxy pipeline: fetch → (check) → output/save."""
+"""Argument parsing and the getproxy pipeline.
+
+With no flags on a terminal it opens the interactive menu; with flags or when
+piped it behaves as a classic one-shot command with text or JSON output.
+"""
 
 from __future__ import annotations
 
@@ -9,51 +13,63 @@ import sys
 from datetime import datetime, timezone
 
 from . import __version__
-from .check import DEFAULT_JUDGE, Judge, check_all, local_ip
+from .check import DEFAULT_JUDGE
 from .fetch import fetch_all
+from .ops import Context, find_one, preload, recheck
 from .proxy import ALL_PROTOCOLS, Protocol, Result, parse_protocol
 from .sources import INDEX, SOURCES
+from .store import STATUS_WORKING, Filters, Store, default_path
 from .ui import Renderer
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
+    p = argparse.ArgumentParser(
         prog="getproxy",
         description="Fresh free proxies from 17+ public sources — no API keys.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  getproxy                       fetch and check all proxies\n"
-            "  getproxy -p socks5 -o out      socks5 only, save into ./out\n"
+            "  getproxy                       open the interactive menu\n"
+            "  getproxy --get -c RU           hand out one working proxy from Russia\n"
+            "  getproxy --recheck             recheck recent proxies (dropped → dead)\n"
+            "  getproxy -p socks5 -l 300 -o out   preload socks5, save into ./out\n"
             "  getproxy --no-check --json     quick raw-list dump as JSON\n"
-            "  getproxy --sources             show the source registry\n"
+            "  getproxy --sources             source registry\n"
         ),
     )
-    parser.add_argument("-p", "--protocols", default="all",
-                        help="comma-separated: http,socks4,socks5 or all (default all)")
-    parser.add_argument("--no-check", action="store_true",
-                        help="do not check liveness — dump the raw aggregated list")
-    parser.add_argument("-t", "--timeout", type=float, default=8.0,
-                        help="per-proxy check timeout, s (default 8)")
-    parser.add_argument("--fetch-timeout", type=float, default=20.0,
-                        help="per-source fetch timeout, s (default 20)")
-    parser.add_argument("-w", "--workers", type=int, default=200,
-                        help="parallel checks (default 200)")
-    parser.add_argument("-l", "--limit", type=int, default=0,
-                        help="max proxies per protocol to check (0 = no limit)")
-    parser.add_argument("-j", "--judge", default=DEFAULT_JUDGE,
-                        help=f"http endpoint echoing the IP (default {DEFAULT_JUDGE})")
-    parser.add_argument("-o", "--out", metavar="DIR",
-                        help="save the result into a directory (working_*.txt + working.json)")
-    parser.add_argument("--json", action="store_true", help="print the result as JSON to stdout")
-    parser.add_argument("--sources", action="store_true", help="show the source registry and exit")
-    parser.add_argument("--no-color", action="store_true", help="disable colour")
-    parser.add_argument("-V", "--version", action="version", version=f"getproxy {__version__}")
-    return parser.parse_args(argv)
+    # Modes.
+    p.add_argument("--menu", action="store_true", help="force the interactive menu")
+    p.add_argument("--no-menu", action="store_true", help="never open the menu")
+    p.add_argument("-g", "--get", action="store_true", help="hand out one working proxy under the filters")
+    p.add_argument("-r", "--recheck", action="store_true", help="recheck recent proxies from the store")
+    p.add_argument("--no-check", action="store_true", help="do not check — dump the raw list")
+    p.add_argument("--purge-dead", action="store_true", help="delete dead records from the store and exit")
+    p.add_argument("--sources", action="store_true", help="show the source registry and exit")
+
+    # Filters.
+    p.add_argument("-p", "--protocols", default="all", help="http,socks4,socks5 or all (default all)")
+    p.add_argument("-c", "--country", default="", metavar="CC", help="ISO country code, e.g. RU")
+    p.add_argument("-a", "--anonymous", action="store_true", help="anonymous only (exit != my IP)")
+    p.add_argument("--max-latency", type=int, default=0, metavar="MS", help="max latency, ms")
+    p.add_argument("-l", "--limit", type=int, default=0, help="max proxies per protocol (0 = all)")
+
+    # Run parameters.
+    p.add_argument("-t", "--timeout", type=float, default=8.0, help="per-proxy check timeout, s (8)")
+    p.add_argument("--fetch-timeout", type=float, default=20.0, help="per-source fetch timeout, s (20)")
+    p.add_argument("-w", "--workers", type=int, default=200, help="parallel checks (200)")
+    p.add_argument("-j", "--judge", default=DEFAULT_JUDGE, help="http judge echoing IP+country")
+    p.add_argument("--max-fails", type=int, default=1, help="failures before marking dead (default 1)")
+    p.add_argument("--db", default="", metavar="PATH", help=f"DB path (default {default_path()})")
+
+    # Output.
+    p.add_argument("-o", "--out", metavar="DIR", help="save the result into a directory")
+    p.add_argument("--json", action="store_true", help="JSON output")
+    p.add_argument("--no-color", action="store_true", help="disable colour")
+    p.add_argument("-V", "--version", action="version", version=f"getproxy {__version__}")
+    return p.parse_args(argv)
 
 
-def _wanted_protocols(spec: str) -> set[Protocol] | None:
-    """Parse the ``--protocols`` spec into a set (None = all)."""
+def _wanted(spec: str) -> set[Protocol] | None:
     spec = spec.strip().lower()
     if spec in ("", "all"):
         return None
@@ -66,6 +82,38 @@ def _wanted_protocols(spec: str) -> set[Protocol] | None:
     return want
 
 
+def _order(want: set[Protocol] | None) -> list[Protocol]:
+    return [p for p in ALL_PROTOCOLS if want is None or p in want]
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _filters(args: argparse.Namespace, want: set[Protocol] | None) -> Filters:
+    return Filters(
+        protocols=want,
+        country_code=args.country,
+        anonymous_only=args.anonymous,
+        max_latency_ms=args.max_latency,
+        limit=args.limit,
+    )
+
+
+def _wants_menu(args: argparse.Namespace) -> bool:
+    """Whether to open the interactive menu: a bare interactive run, no actions."""
+    if args.menu:
+        return True
+    if args.no_menu or args.json:
+        return False
+    action_flags = (args.get, args.recheck, args.no_check, args.purge_dead, bool(args.out))
+    if any(action_flags):
+        return False
+    if args.protocols != "all" or args.limit or args.country or args.anonymous or args.max_latency:
+        return False
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
 def _print_sources(r: Renderer) -> None:
     r.banner()
     r.line(f"  Sources: {len(INDEX)}  ({len(SOURCES)} feeds)\n")
@@ -75,33 +123,105 @@ def _print_sources(r: Renderer) -> None:
         r.line(f"  {repo.name:<28} {repo.kinds:<26} {repo.cadence}")
 
 
-def _order(want: set[Protocol] | None) -> list[Protocol]:
-    return [p for p in ALL_PROTOCOLS if want is None or p in want]
-
-
-def _save(out_dir: str, results: list[Result] | None, pool_by_proto: dict[Protocol, list], r: Renderer) -> None:
-    """Save the working (or raw) proxies into a directory."""
+def _save(out_dir: str, results: list[Result], r: Renderer) -> None:
     os.makedirs(out_dir, exist_ok=True)
-    if results is not None:
-        by_proto: dict[str, list[str]] = {}
-        for res in results:
-            by_proto.setdefault(str(res.proxy.protocol), []).append(res.proxy.addr)
-        for proto, addrs in by_proto.items():
-            path = os.path.join(out_dir, f"working_{proto}.txt")
-            with open(path, "w", encoding="utf-8") as f:
-                f.write("\n".join(addrs) + "\n")
-        with open(os.path.join(out_dir, "working.json"), "w", encoding="utf-8") as f:
-            json.dump([res.to_dict() for res in results], f, ensure_ascii=False, indent=2)
-    else:
-        for proto, proxies in pool_by_proto.items():
-            path = os.path.join(out_dir, f"all_{proto}.txt")
-            with open(path, "w", encoding="utf-8") as f:
-                f.write("\n".join(p.addr for p in proxies) + "\n")
+    by_proto: dict[str, list[str]] = {}
+    for res in results:
+        by_proto.setdefault(str(res.proxy.protocol), []).append(res.proxy.addr)
+    for proto, addrs in by_proto.items():
+        with open(os.path.join(out_dir, f"working_{proto}.txt"), "w", encoding="utf-8") as f:
+            f.write("\n".join(addrs) + "\n")
+    with open(os.path.join(out_dir, "working.json"), "w", encoding="utf-8") as f:
+        json.dump([res.to_dict() for res in results], f, ensure_ascii=False, indent=2)
     r.good(f"Saved to {out_dir}/")
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+# --- modes ------------------------------------------------------------------
+
+def _mode_get(args, store, want, r) -> int:
+    ctx = Context.build(args.judge, timeout=args.timeout, workers=args.workers, max_fails=args.max_fails)
+    res = find_one(store, ctx, _filters(args, want))
+    if args.json:
+        json.dump(res.to_dict() if res else None, sys.stdout, ensure_ascii=False, indent=2)
+        print()
+    elif res is None:
+        r.warn("No live proxy for the filters — try preload (getproxy -p http -l 300).")
+    else:
+        r.good(f"Proxy: {res.proxy.url}  [{res.country_code or '--'}]  {res.latency_ms}ms")
+    return 0 if res else 1
+
+
+def _mode_recheck(args, store, r) -> int:
+    ctx = Context.build(args.judge, timeout=args.timeout, workers=args.workers, max_fails=args.max_fails)
+    cb = None if args.json else (lambda d, t: r.progress("recheck", d, t))
+    out = recheck(store, ctx, on_progress=cb)
+    if args.json:
+        json.dump({"checked": out.checked, "still_working": out.still_working,
+                   "newly_dead": out.newly_dead}, sys.stdout, ensure_ascii=False, indent=2)
+        print()
+    else:
+        r.good(f"Checked {out.checked}: alive {out.still_working}, dropped {out.newly_dead} (→ dead)")
+    return 0
+
+
+def _mode_no_check(args, store, want, r) -> int:
+    pool = fetch_all(want, timeout=args.fetch_timeout, workers=32)
+    selected: dict[Protocol, list] = {}
+    for proto in _order(want):
+        proxies = pool.proxies.get(proto, [])
+        selected[proto] = proxies[:args.limit] if args.limit > 0 else proxies
+    if args.json:
+        json.dump({
+            "generated_at": _now(), "checked": False,
+            "counts": {str(p): len(v) for p, v in selected.items()},
+            "proxies": {str(p): [x.url for x in v] for p, v in selected.items()},
+        }, sys.stdout, ensure_ascii=False, indent=2)
+        print()
+    else:
+        for proto in _order(want):
+            r.line(f"\n  {proto} — {len(selected[proto])}")
+            for x in selected[proto]:
+                r.line(f"    {x.addr}")
+    if args.out:
+        os.makedirs(args.out, exist_ok=True)
+        for proto, proxies in selected.items():
+            with open(os.path.join(args.out, f"all_{proto}.txt"), "w", encoding="utf-8") as f:
+                f.write("\n".join(p.addr for p in proxies) + "\n")
+        r.good(f"Saved to {args.out}/")
+    return 0
+
+
+def _mode_preload(args, store, want, r) -> int:
+    if not args.json:
+        r.banner()
+        r.info(f"Fetching sources ({'all' if want is None else ', '.join(map(str, _order(want)))})…")
+    ctx = Context.build(args.judge, timeout=args.timeout, fetch_timeout=args.fetch_timeout,
+                        workers=args.workers, max_fails=args.max_fails)
+    if not args.json:
+        r.info(f"My external IP: {ctx.my_ip or 'unknown'}  |  judge: {ctx.judge.url}")
+
+    out = preload(
+        store, ctx, want, limit=args.limit,
+        on_fetch_done=None if args.json else (
+            lambda total, ok, all_: r.good(f"Collected {total} proxies from {ok}/{all_} feeds")),
+        on_progress=None if args.json else (lambda proto, d, t: r.progress(f"check {proto}", d, t)),
+    )
+    alive = [x for x in out.results if x.ok]
+
+    if args.json:
+        json.dump({
+            "generated_at": _now(), "checked": True, "my_ip": ctx.my_ip, "judge": ctx.judge.url,
+            "working": len(alive), "results": [x.to_dict() for x in alive],
+        }, sys.stdout, ensure_ascii=False, indent=2)
+        print()
+    else:
+        r.line(f"\n  {'TOP WORKING (by latency)':<40}\n  {'-' * 60}")
+        for res in alive[:25]:
+            r.result_line(str(res), ok=True)
+        r.line(f"\n  Total alive: {len(alive)}  (saved to the store)")
+    if args.out:
+        _save(args.out, alive, r)
+    return 0
 
 
 def run(argv: list[str]) -> int:
@@ -112,92 +232,25 @@ def run(argv: list[str]) -> int:
         _print_sources(r)
         return 0
 
-    want = _wanted_protocols(args.protocols)
-    order = _order(want)
-
-    if not args.json:
-        r.banner()
-        r.info(f"Fetching sources ({'all' if want is None else ', '.join(map(str, order))})…")
-
-    pool = fetch_all(want, timeout=args.fetch_timeout, workers=32)
-    ok_feeds = sum(1 for s in pool.stats if not s.error)
-    if not args.json:
-        r.good(f"Collected {pool.total} unique proxies from {ok_feeds}/{len(pool.stats)} feeds")
-
-    # Apply the per-protocol limit.
-    selected: dict[Protocol, list] = {}
-    for proto in order:
-        proxies = pool.proxies.get(proto, [])
-        if args.limit > 0:
-            proxies = proxies[:args.limit]
-        selected[proto] = proxies
-
-    # No-check mode: dump the raw aggregated list.
-    if args.no_check:
-        if args.json:
-            payload = {
-                "generated_at": _now(),
-                "checked": False,
-                "counts": {str(p): len(v) for p, v in selected.items()},
-                "proxies": {str(p): [x.url for x in v] for p, v in selected.items()},
-            }
-            json.dump(payload, sys.stdout, ensure_ascii=False, indent=2)
-            print()
-        else:
-            for proto in order:
-                r.line(f"\n  {proto} — {len(selected[proto])}")
-                for p in selected[proto]:
-                    r.line(f"    {p.addr}")
-        if args.out:
-            _save(args.out, None, selected, r)
-        return 0
-
-    # Check mode.
-    judge = Judge.parse(args.judge)
-    my_ip = local_ip(judge, args.timeout)
-    if not args.json:
-        r.info(f"My external IP: {my_ip or 'unknown'}  |  judge: {judge.url}")
-
-    all_results: list[Result] = []
-    for proto in order:
-        proxies = selected[proto]
-        if not proxies:
-            continue
-        cb = None
-        if not args.json:
-            cb = lambda done, total, _p=proto: r.progress(f"check {_p}", done, total)
-        results = check_all(
-            proxies, judge,
-            timeout=args.timeout, workers=args.workers, my_ip=my_ip, on_progress=cb,
-        )
-        all_results.extend(results)
-        if not args.json:
-            anon = sum(1 for x in results if x.anonymous)
-            r.good(f"{proto}: alive {len(results)}/{len(proxies)}  (anonymous {anon})")
-
-    all_results.sort(key=lambda x: x.latency_ms)
-
-    if args.json:
-        payload = {
-            "generated_at": _now(),
-            "checked": True,
-            "my_ip": my_ip,
-            "judge": judge.url,
-            "working": len(all_results),
-            "results": [x.to_dict() for x in all_results],
-        }
-        json.dump(payload, sys.stdout, ensure_ascii=False, indent=2)
-        print()
-    else:
-        r.line(f"\n  {'TOP WORKING (by latency)':<40}")
-        r.line(f"  {'-' * 60}")
-        for res in all_results[:25]:
-            r.result_line(str(res), ok=True)
-        r.line(f"\n  Total alive: {len(all_results)}")
-
-    if args.out:
-        _save(args.out, all_results, selected, r)
-    return 0
+    want = _wanted(args.protocols)
+    store = Store(args.db or None)
+    try:
+        if args.purge_dead:
+            r.good(f"Dead records removed: {store.purge_dead()}")
+            return 0
+        if _wants_menu(args):
+            from .menu import Menu
+            return Menu(store, args.judge, timeout=args.timeout,
+                        workers=args.workers, max_fails=args.max_fails).run()
+        if args.get:
+            return _mode_get(args, store, want, r)
+        if args.recheck:
+            return _mode_recheck(args, store, r)
+        if args.no_check:
+            return _mode_no_check(args, store, want, r)
+        return _mode_preload(args, store, want, r)
+    finally:
+        store.close()
 
 
 def main() -> None:
