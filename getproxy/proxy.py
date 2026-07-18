@@ -130,6 +130,8 @@ class Result:
     ok: bool = False
     latency_ms: int = 0
     exit_ip: str = ""
+    country_code: str = ""
+    country: str = ""
     anonymous: bool = False
     error: str = ""
 
@@ -143,6 +145,8 @@ class Result:
             "ok": self.ok,
             "latency_ms": self.latency_ms,
             "exit_ip": self.exit_ip,
+            "country_code": self.country_code,
+            "country": self.country,
             "anonymous": self.anonymous,
             "error": self.error,
         }
@@ -151,4 +155,5 @@ class Result:
         if not self.ok:
             return f"{self.proxy.url:<25}  down ({self.error})"
         tag = "anonymous" if self.anonymous else "transparent"
-        return f"{self.proxy.url:<25}  {self.latency_ms:>5}ms  {tag:<11}  exit={self.exit_ip}"
+        geo = f"[{self.country_code}] " if self.country_code else ""
+        return f"{self.proxy.url:<25}  {self.latency_ms:>5}ms  {tag:<11}  {geo}exit={self.exit_ip}"
