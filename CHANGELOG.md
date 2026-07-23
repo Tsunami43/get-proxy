@@ -45,6 +45,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   repainted in place instead of being cleared before every frame.
 
 ### Changed
+- `--get` scans the feeds as a stream instead of in fixed batches, returning the
+  instant the first matching proxy answers. It no longer waits for a whole batch
+  of 200 to drain — where the slowest dead proxy stalled the rest at its connect
+  timeout — so the common case (an empty store, first working proxy) is several
+  times faster.
 - `--max-fails` defaults to 3 instead of 1. Free proxies are flaky, and with
   judge noise filtered out the counter now measures the proxy.
 - Preload and `--get` skip known-dead proxies before checking, so accumulated

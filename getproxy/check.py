@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Iterator
 from urllib.parse import urlsplit
 
 from . import __version__
@@ -358,6 +358,40 @@ def check_one(proxy: Proxy, judge: Judge, timeout: float, my_ip: str = "",
             # be trusted with TLS, which the https flag now records.
             result.https = False
     return result
+
+
+def check_iter(
+    proxies: list[Proxy],
+    judge: Judge,
+    *,
+    timeout: float = 8.0,
+    workers: int = 200,
+    my_ip: str = "",
+    connect_timeout: float | None = None,
+    https_target: str = "",
+    anon_judge: Judge | None = None,
+) -> "Iterator[Result]":
+    """Yield results as each check finishes, keeping ``workers`` always in flight.
+
+    Unlike :func:`check_all` this never waits for a whole batch: the caller can
+    stop on the first hit and the rest is cancelled. That removes both the
+    per-batch tail wait (idle workers while the slowest proxy times out) and the
+    delay of finishing a batch that already contains the answer.
+
+    Closing the generator early (a ``break``) tears the pool down without
+    waiting on the in-flight sockets.
+    """
+    ex = ThreadPoolExecutor(max_workers=max(1, workers))
+    futures = [ex.submit(check_one, p, judge, timeout, my_ip, connect_timeout,
+                         https_target=https_target, anon_judge=anon_judge)
+               for p in proxies]
+    try:
+        for fut in as_completed(futures):
+            yield fut.result()
+    finally:
+        # Runs on normal exhaustion, on an early break (GeneratorExit) and on
+        # KeyboardInterrupt alike: drop what has not started, do not block.
+        ex.shutdown(wait=False, cancel_futures=True)
 
 
 def check_all(

@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
-from .check import DEFAULT_JUDGE, Judge, check_all, check_one, local_ip
+from .check import DEFAULT_JUDGE, Judge, check_all, check_iter, check_one, local_ip
 from .fetch import fetch_all
 from .proxy import ALL_PROTOCOLS, Protocol, Proxy, Result
 from .store import STATUS_WORKING, Filters, Store
@@ -151,14 +151,14 @@ def recheck(
 
 def find_one(
     store: Store, ctx: Context, filters: Filters, *,
-    scan_batch: int = 200,
+    flush_every: int = 200,
     on_scan: Callable[[int, int], None] | None = None,
 ) -> Result | None:
     """Quickly hand back one working proxy under the filters.
 
     First try the best candidate from the store and confirm it with a fresh
-    check. If the store is empty, scan the live feeds in batches until the first
-    hit, recording outcomes along the way.
+    check. If the store is empty, stream checks over the live feeds and return
+    the first match, recording outcomes along the way.
     """
     # 1) Candidate from the store.
     best = store.best(filters)
@@ -178,22 +178,29 @@ def find_one(
     for proto in _order(want):
         candidates.extend(p for p in pool.proxies.get(proto, []) if p.key not in dead)
 
+    total = len(candidates)
     scanned = 0
-    for i in range(0, len(candidates), scan_batch):
-        batch = candidates[i:i + scan_batch]
-        results = check_all(batch, ctx.judge, timeout=ctx.timeout,
-                            connect_timeout=ctx.connect_timeout,
-                            workers=ctx.workers, my_ip=ctx.my_ip,
-                            https_target=ctx.https_target)
-        store.record_many(results, max_fails=ctx.max_fails)
-        scanned += len(batch)
+    hit: Result | None = None
+    pending: list[Result] = []  # buffered so the DB still commits in batches
+    stream = check_iter(candidates, ctx.judge, timeout=ctx.timeout,
+                        connect_timeout=ctx.connect_timeout,
+                        workers=ctx.workers, my_ip=ctx.my_ip,
+                        https_target=ctx.https_target)
+    for res in stream:
+        pending.append(res)
+        scanned += 1
         if on_scan:
-            on_scan(scanned, len(candidates))
-        hits = [r for r in results if r.ok and _matches(r, filters)]
-        if hits:
-            hits.sort(key=lambda r: r.latency_ms)
-            return hits[0]
-    return None
+            on_scan(scanned, total)
+        if res.ok and _matches(res, filters):
+            hit = res
+            break  # closes the generator, cancelling the rest of the scan
+        if len(pending) >= flush_every:
+            store.record_many(pending, max_fails=ctx.max_fails)
+            pending = []
+
+    if pending:
+        store.record_many(pending, max_fails=ctx.max_fails)
+    return hit
 
 
 def _matches(res: Result, filters: Filters) -> bool:

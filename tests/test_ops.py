@@ -50,9 +50,13 @@ class _OpsCase(unittest.TestCase):
         if pool is not None:
             self.enterContext(mock.patch.object(ops, "fetch_all", return_value=pool))
         if results is not None:
-            checker = mock.Mock(side_effect=lambda proxies, *a, **kw: [
-                r for r in results if r.proxy in proxies])
+            select = lambda proxies, *a, **kw: [r for r in results if r.proxy in proxies]
+            checker = mock.Mock(side_effect=select)
             self.enterContext(mock.patch.object(ops, "check_all", checker))
+            # find_one streams instead of batching; a list is a fine stand-in
+            # for the generator, and an early break just stops iterating it.
+            self.enterContext(mock.patch.object(ops, "check_iter",
+                                                mock.Mock(side_effect=select)))
             return checker
         return None
 
@@ -145,19 +149,32 @@ class TestFindOne(_OpsCase):
             res = ops.find_one(self.store, _ctx(), Filters())
         self.assertEqual(res.proxy.key, fresh.key)
 
-    def test_stops_at_the_first_matching_batch(self):
+    def test_stops_at_the_first_match(self):
+        # Every candidate would match; the scan must return the first and stop,
+        # not drain the rest.
         proxies = [_proxy(f"10.0.0.{i}") for i in range(10)]
         self.patch(pool=_pool(proxies), results=[_ok(p) for p in proxies])
-        checker = self.patch(results=[_ok(p) for p in proxies])
-        ops.find_one(self.store, _ctx(), Filters(), scan_batch=3)
-        self.assertEqual(checker.call_count, 1)
+        scanned = []
+        res = ops.find_one(self.store, _ctx(), Filters(),
+                           on_scan=lambda done, total: scanned.append(done))
+        self.assertEqual(res.proxy.key, proxies[0].key)
+        self.assertEqual(scanned[-1], 1)  # broke after the very first result
 
     def test_country_filter_rejects_a_live_but_wrong_proxy(self):
         ru, us = _proxy("10.0.0.1"), _proxy("10.0.0.2")
         self.patch(pool=_pool([ru, us]),
                    results=[_ok(ru, cc="RU"), _ok(us, cc="US")])
-        res = ops.find_one(self.store, _ctx(), Filters(country_code="US"), scan_batch=10)
+        res = ops.find_one(self.store, _ctx(), Filters(country_code="US"))
         self.assertEqual(res.country_code, "US")
+
+    def test_records_outcomes_scanned_before_the_hit(self):
+        miss, hit = _proxy("10.0.0.1"), _proxy("10.0.0.2")
+        self.patch(pool=_pool([miss, hit]),
+                   results=[_ok(miss, cc="RU"), _ok(hit, cc="US")])
+        ops.find_one(self.store, _ctx(), Filters(country_code="US"), flush_every=1)
+        # Both the rejected proxy and the hit are persisted.
+        self.assertEqual(self.store.details(miss.key)["status"], STATUS_WORKING)
+        self.assertEqual(self.store.details(hit.key)["status"], STATUS_WORKING)
 
     def test_returns_none_when_nothing_matches(self):
         p = _proxy("10.0.0.1")

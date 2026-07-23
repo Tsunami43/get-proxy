@@ -114,6 +114,31 @@ class TestCheckAllInterrupt(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 5)
 
 
+class TestCheckIter(unittest.TestCase):
+    """Streaming scan: yields as checks finish, stops cleanly on an early break."""
+
+    def _proxies(self, n):
+        return [Proxy(host=f"1.1.1.{i}", port=80, protocol=Protocol.HTTP) for i in range(n)]
+
+    def test_yields_every_result(self):
+        proxies = self._proxies(6)
+        judge = Judge.parse("http://judge.test/")
+        with mock.patch.object(check, "check_one",
+                               side_effect=lambda p, *a, **kw: Result(proxy=p, ok=True)):
+            got = list(check.check_iter(proxies, judge, workers=4))
+        self.assertEqual({r.proxy.key for r in got}, {p.key for p in proxies})
+
+    def test_early_break_returns_promptly(self):
+        proxies = self._proxies(50)
+        judge = Judge.parse("http://judge.test/")
+        started = time.monotonic()
+        with mock.patch.object(check, "check_one",
+                               side_effect=lambda p, *a, **kw: Result(proxy=p, ok=True)):
+            for _ in check.check_iter(proxies, judge, workers=4):
+                break  # closes the generator; the rest must be cancelled
+        self.assertLess(time.monotonic() - started, 5)
+
+
 class TestJudge(unittest.TestCase):
     def test_default_is_http(self):
         j = Judge.parse(DEFAULT_JUDGE)
