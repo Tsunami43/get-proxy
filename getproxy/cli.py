@@ -13,7 +13,7 @@ import sys
 from datetime import datetime, timezone
 
 from . import __version__
-from .check import DEFAULT_HTTPS_TARGET, DEFAULT_JUDGE
+from .check import DEFAULT_ANON_JUDGE, DEFAULT_HTTPS_TARGET, DEFAULT_JUDGE
 from .fetch import fetch_all
 from .ops import Context, find_one, preload, recheck
 from .proxy import ALL_PROTOCOLS, Protocol, Result, parse_protocol
@@ -52,6 +52,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("-a", "--anonymous", action="store_true", help="anonymous only (exit != my IP)")
     p.add_argument("--https-only", action="store_true",
                    help="only proxies that passed the TLS probe (implies --verify-https)")
+    p.add_argument("--elite", action="store_true",
+                   help="only proxies adding no proxy headers (implies --check-anonymity)")
     p.add_argument("--max-latency", type=int, default=0, metavar="MS", help="max latency, ms")
     p.add_argument("-l", "--limit", type=int, default=0, help="max proxies per protocol (0 = all)")
 
@@ -68,6 +70,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
                    help="also probe whether the proxy can carry TLS (slower)")
     p.add_argument("--https-target", default=DEFAULT_HTTPS_TARGET, metavar="URL",
                    help="endpoint for the TLS probe")
+    p.add_argument("--check-anonymity", action="store_true",
+                   help="grade elite/anonymous/transparent via a header-echoing judge")
+    p.add_argument("--anon-judge", default=DEFAULT_ANON_JUDGE, metavar="URL",
+                   help="header-echoing judge for the anonymity grade")
     p.add_argument("--db", default="", metavar="PATH", help=f"DB path (default {default_path()})")
 
     # Output.
@@ -83,6 +89,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 def _https_target(args: argparse.Namespace) -> str:
     """The TLS probe endpoint, or "" when the probe is off."""
     return args.https_target if (args.verify_https or args.https_only) else ""
+
+
+def _anon_judge(args: argparse.Namespace) -> str:
+    """The header-echoing judge URL, or "" when grading is off."""
+    return args.anon_judge if (args.check_anonymity or args.elite) else ""
 
 
 def _wanted(spec: str) -> set[Protocol] | None:
@@ -112,6 +123,7 @@ def _filters(args: argparse.Namespace, want: set[Protocol] | None) -> Filters:
         country_code=args.country,
         anonymous_only=args.anonymous,
         https_only=args.https_only,
+        elite_only=args.elite,
         max_latency_ms=args.max_latency,
         limit=args.limit,
     )
@@ -158,7 +170,8 @@ def _save(out_dir: str, results: list[Result], r: Renderer) -> None:
 def _mode_get(args, store, want, r) -> int:
     ctx = Context.build(args.judge, timeout=args.timeout, connect_timeout=args.connect_timeout,
                         workers=args.workers, max_fails=args.max_fails, revive_days=args.revive_after,
-                        https_target=_https_target(args))
+                        https_target=_https_target(args),
+                        anon_judge_url=_anon_judge(args))
     res = find_one(store, ctx, _filters(args, want))
     if args.raw:
         # Nothing but the URL on stdout, so `export HTTP_PROXY=$(getproxy -g --raw)`
@@ -178,7 +191,8 @@ def _mode_get(args, store, want, r) -> int:
 def _mode_recheck(args, store, r) -> int:
     ctx = Context.build(args.judge, timeout=args.timeout, connect_timeout=args.connect_timeout,
                         workers=args.workers, max_fails=args.max_fails, revive_days=args.revive_after,
-                        https_target=_https_target(args))
+                        https_target=_https_target(args),
+                        anon_judge_url=_anon_judge(args))
     cb = None if args.json else (lambda d, t: r.progress("recheck", d, t))
     out = recheck(store, ctx, on_progress=cb)
     if args.json:
@@ -225,7 +239,8 @@ def _mode_preload(args, store, want, r) -> int:
     ctx = Context.build(args.judge, timeout=args.timeout, connect_timeout=args.connect_timeout,
                         fetch_timeout=args.fetch_timeout, workers=args.workers,
                         max_fails=args.max_fails, revive_days=args.revive_after,
-                        https_target=_https_target(args))
+                        https_target=_https_target(args),
+                        anon_judge_url=_anon_judge(args))
     if not quiet:
         r.info(f"My external IP: {ctx.my_ip or 'unknown'}  |  judge: {ctx.judge.url}")
 
@@ -276,7 +291,8 @@ def run(argv: list[str]) -> int:
             return Menu(store, args.judge, timeout=args.timeout,
                         connect_timeout=args.connect_timeout,
                         workers=args.workers, max_fails=args.max_fails, revive_days=args.revive_after,
-                        https_target=_https_target(args)).run()
+                        https_target=_https_target(args),
+                        anon_judge_url=_anon_judge(args)).run()
         if args.get:
             return _mode_get(args, store, want, r)
         if args.recheck:

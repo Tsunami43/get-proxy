@@ -58,8 +58,21 @@ Run `getproxy --help` for every flag.
 ## A word of caution
 
 Free proxies are run by strangers — they can watch or tamper with your traffic.
-**Never send passwords or payments through them.** getproxy marks which proxies
-are anonymous and which leak your real IP, but treat them as throwaway.
+**Never send passwords or payments through them.** Treat every one as throwaway.
+
+By default getproxy only reports whether the exit address differs from yours.
+That does not prove the proxy hides you: it can forward your address in an
+`X-Forwarded-For` header the exit check never sees. Run `--check-anonymity` to
+grade each proxy against a header-echoing judge:
+
+| grade | what the far end sees |
+| --- | --- |
+| `elite` | no sign of a proxy |
+| `anonymous` | a proxy, but not your address |
+| `transparent` | your real address |
+
+`--elite` keeps only the first kind. Grading costs one extra request per proxy,
+which is why it is off by default.
 
 ## License
 

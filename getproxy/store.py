@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS proxies (
     country      TEXT NOT NULL DEFAULT '',
     exit_ip      TEXT NOT NULL DEFAULT '',
     anonymous    INTEGER NOT NULL DEFAULT 0,
+    anonymity    TEXT NOT NULL DEFAULT '',
     https        INTEGER NOT NULL DEFAULT 0,
     latency_ms   INTEGER NOT NULL DEFAULT 0,
     fail_count   INTEGER NOT NULL DEFAULT 0,
@@ -47,6 +48,7 @@ CREATE INDEX IF NOT EXISTS idx_proto   ON proxies(protocol);
 # Append here when the schema grows; never reorder or remove.
 _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("https", "https INTEGER NOT NULL DEFAULT 0"),
+    ("anonymity", "anonymity TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -71,6 +73,7 @@ class Filters:
     country_code: str = ""       # ISO code, e.g. "RU" (case-insensitive)
     anonymous_only: bool = False
     https_only: bool = False     # only proxies whose TLS probe succeeded
+    elite_only: bool = False     # only proxies graded "elite" (no proxy headers)
     max_latency_ms: int = 0      # 0 = no limit
     limit: int = 0               # 0 = no limit
 
@@ -162,10 +165,12 @@ class Store:
         if result.ok:
             self.db.execute(
                 "UPDATE proxies SET status=?, country_code=?, country=?, exit_ip=?, "
-                "anonymous=?, https=?, latency_ms=?, fail_count=0, last_checked=?, last_ok=? "
+                "anonymous=?, anonymity=?, https=?, latency_ms=?, fail_count=0, "
+                "last_checked=?, last_ok=? "
                 "WHERE key=?",
                 (STATUS_WORKING, result.country_code, result.country, result.exit_ip,
-                 int(result.anonymous), int(result.https), result.latency_ms, now, now, p.key),
+                 int(result.anonymous), result.anonymity, int(result.https),
+                 result.latency_ms, now, now, p.key),
             )
             return STATUS_WORKING
 
@@ -248,6 +253,8 @@ class Store:
             where.append("anonymous = 1")
         if filters.https_only:
             where.append("https = 1")
+        if filters.elite_only:
+            where.append("anonymity = 'elite'")
         if filters.max_latency_ms > 0:
             where.append("latency_ms > 0 AND latency_ms <= ?")
             params.append(filters.max_latency_ms)

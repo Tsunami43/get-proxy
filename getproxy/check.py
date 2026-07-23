@@ -44,6 +44,11 @@ FALLBACK_JUDGE = "http://api.ipify.org/"
 # this one is tiny, unauthenticated and almost universally reachable.
 DEFAULT_HTTPS_TARGET = "https://www.cloudflare.com/cdn-cgi/trace"
 
+# Judge for the optional anonymity grade. ip-api reports the exit address but
+# not our request headers, so header leaks (X-Forwarded-For and friends) are
+# invisible to it; grading needs an endpoint that echoes what it received.
+DEFAULT_ANON_JUDGE = "http://azenv.net/"
+
 
 @dataclass(frozen=True, slots=True)
 class Judge:
@@ -166,8 +171,9 @@ def _socks4_connect(sock: socket.socket, host: str, port: int) -> None:
         raise OSError(f"socks4: CONNECT refused (code {rep[1]})")
 
 
-def _check_socks(proxy: Proxy, judge: Judge, timeout: float, connect_timeout: float) -> tuple[str, str, str]:
-    """Send a judge request through a SOCKS proxy, return (ip, cc, country).
+def _get_via_socks(proxy: Proxy, host: str, port: int, path: str,
+                   timeout: float, connect_timeout: float) -> bytes:
+    """GET ``path`` through a SOCKS proxy and return the raw response body.
 
     The TCP connect uses ``connect_timeout`` (usually shorter): most dead proxies
     fail right at the handshake, so a tighter connect budget drops them faster
@@ -176,13 +182,13 @@ def _check_socks(proxy: Proxy, judge: Judge, timeout: float, connect_timeout: fl
     with socket.create_connection((proxy.host, proxy.port), timeout=connect_timeout) as sock:
         sock.settimeout(timeout)
         if proxy.protocol is Protocol.SOCKS5:
-            _socks5_connect(sock, judge.host, judge.port)
+            _socks5_connect(sock, host, port)
         else:
-            _socks4_connect(sock, judge.host, judge.port)
+            _socks4_connect(sock, host, port)
 
         request = (
-            f"GET {judge.path} HTTP/1.1\r\n"
-            f"Host: {judge.host}\r\n"
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {host}\r\n"
             f"User-Agent: {_USER_AGENT}\r\n"
             "Accept: */*\r\n"
             "Connection: close\r\n\r\n"
@@ -198,25 +204,71 @@ def _check_socks(proxy: Proxy, judge: Judge, timeout: float, connect_timeout: fl
 
     head, _, body = bytes(data).partition(b"\r\n\r\n")
     if not body:
-        raise OSError("empty judge response over socks")
+        raise OSError("empty response over socks")
     if _JUDGE_BUSY_RE.search(head):
         raise JudgeError("judge rate-limited the request")
-    return _parse_body(body)
+    return body
+
+
+def _check_socks(proxy: Proxy, judge: Judge, timeout: float, connect_timeout: float) -> tuple[str, str, str]:
+    """Send a judge request through a SOCKS proxy, return (ip, cc, country)."""
+    return _parse_body(
+        _get_via_socks(proxy, judge.host, judge.port, judge.path, timeout, connect_timeout))
 
 
 def _check_http(proxy: Proxy, judge: Judge, timeout: float) -> tuple[str, str, str]:
     """Send a judge request through an HTTP proxy, return (ip, cc, country)."""
+    return _parse_body(_get_via_http(proxy, judge.url, timeout))
+
+
+def _get_via_http(proxy: Proxy, url: str, timeout: float) -> bytes:
+    """GET ``url`` through an HTTP proxy and return the raw response body."""
     proxy_url = f"http://{proxy.addr}"
     handler = urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
     opener = urllib.request.build_opener(handler)
-    req = urllib.request.Request(judge.url, headers={"User-Agent": _USER_AGENT})
+    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
     try:
         with opener.open(req, timeout=timeout) as resp:  # noqa: S310
-            return _parse_body(resp.read(8192))
+            return resp.read(65536)
     except urllib.error.HTTPError as exc:
         if exc.code in _JUDGE_BUSY_CODES:
             raise JudgeError(f"judge returned HTTP {exc.code}") from exc
         raise
+
+
+# Headers a proxy adds to announce itself or to pass the client address on.
+# Normalised to dashes and upper case before matching, so azenv-style
+# HTTP_X_FORWARDED_FOR and a JSON "X-Forwarded-For" key both hit.
+_FORWARD_HEADERS = (
+    b"X-FORWARDED-FOR", b"X-FORWARDED", b"FORWARDED-FOR", b"FORWARDED",
+    b"VIA", b"PROXY-CONNECTION", b"X-PROXY-ID", b"CLIENT-IP", b"X-REAL-IP",
+)
+
+
+def _classify_anonymity(body: bytes, my_ip: str) -> str:
+    """Grade a header-echoing judge response: transparent / anonymous / elite.
+
+    ``transparent`` — our address is in there somewhere, so the proxy passed it on.
+    ``anonymous``   — no address of ours, but forwarding headers reveal a proxy.
+    ``elite``       — the request looks like it came straight from the exit node.
+    """
+    normalised = body.replace(b"_", b"-").upper()
+    if my_ip and my_ip.encode() in body:
+        return "transparent"
+    if any(h in normalised for h in _FORWARD_HEADERS):
+        return "anonymous"
+    return "elite"
+
+
+def _probe_anonymity(proxy: Proxy, judge: Judge, my_ip: str,
+                     timeout: float, connect_timeout: float) -> str:
+    """Ask a header-echoing judge what the far end actually sees."""
+    if proxy.protocol is Protocol.HTTP:
+        body = _get_via_http(proxy, judge.url, timeout)
+    else:
+        body = _get_via_socks(proxy, judge.host, judge.port, judge.path,
+                              timeout, connect_timeout)
+    return _classify_anonymity(body, my_ip)
 
 
 def _probe_https(proxy: Proxy, target: str, timeout: float, connect_timeout: float) -> None:
@@ -252,7 +304,7 @@ def _probe_https(proxy: Proxy, target: str, timeout: float, connect_timeout: flo
 
 def check_one(proxy: Proxy, judge: Judge, timeout: float, my_ip: str = "",
               connect_timeout: float | None = None, *,
-              https_target: str = "") -> Result:
+              https_target: str = "", anon_judge: Judge | None = None) -> Result:
     """Check a single proxy and return a :class:`Result` with latency and exit IP.
 
     ``connect_timeout`` bounds the TCP connect for SOCKS proxies; it falls back
@@ -288,6 +340,15 @@ def check_one(proxy: Proxy, judge: Judge, timeout: float, my_ip: str = "",
     result.country = country
     result.anonymous = bool(my_ip) and exit_ip != my_ip
 
+    if anon_judge is not None:
+        try:
+            result.anonymity = _probe_anonymity(proxy, anon_judge, my_ip,
+                                                timeout, connect_timeout)
+        except Exception:
+            # Grading is best-effort; a judge that is down must not fail a proxy
+            # that already answered the main check.
+            result.anonymity = ""
+
     if https_target:
         try:
             _probe_https(proxy, https_target, timeout, connect_timeout)
@@ -308,6 +369,7 @@ def check_all(
     my_ip: str = "",
     connect_timeout: float | None = None,
     https_target: str = "",
+    anon_judge: Judge | None = None,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> list[Result]:
     """Check proxies in parallel, returning every result, live ones first.
@@ -323,7 +385,8 @@ def check_all(
     results: list[Result] = []
     with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
         futures = [ex.submit(check_one, p, judge, timeout, my_ip, connect_timeout,
-                             https_target=https_target) for p in proxies]
+                             https_target=https_target, anon_judge=anon_judge)
+                   for p in proxies]
         for done, fut in enumerate(as_completed(futures), start=1):
             results.append(fut.result())
             if on_progress is not None:

@@ -2,7 +2,13 @@
 
 import unittest
 
-from getproxy.check import DEFAULT_JUDGE, Judge, JudgeError, _parse_body
+from getproxy.check import (
+    DEFAULT_JUDGE,
+    Judge,
+    JudgeError,
+    _classify_anonymity,
+    _parse_body,
+)
 
 
 class TestParseBody(unittest.TestCase):
@@ -47,6 +53,39 @@ class TestJudgeRefusal(unittest.TestCase):
     def test_plain_body_without_ip_is_a_proxy_fault_not_a_judge_one(self):
         # No JudgeError here: an unparseable body means the proxy mangled it.
         self.assertEqual(_parse_body(b"<html>blocked</html>")[0], "")
+
+
+class TestAnonymityGrading(unittest.TestCase):
+    """Grades come from what the far end echoes back, not from the exit IP alone."""
+
+    MY_IP = "203.0.113.7"
+
+    # azenv-style output, the format most public proxy judges serve.
+    AZENV_LEAKY = b"REMOTE_ADDR = 198.51.100.4\nHTTP_X_FORWARDED_FOR = 203.0.113.7\n"
+    AZENV_VIA = b"REMOTE_ADDR = 198.51.100.4\nHTTP_VIA = 1.1 squid\n"
+    AZENV_CLEAN = b"REMOTE_ADDR = 198.51.100.4\nHTTP_USER_AGENT = getproxy\n"
+
+    def test_our_address_in_headers_is_transparent(self):
+        self.assertEqual(_classify_anonymity(self.AZENV_LEAKY, self.MY_IP), "transparent")
+
+    def test_via_header_without_our_address_is_anonymous(self):
+        self.assertEqual(_classify_anonymity(self.AZENV_VIA, self.MY_IP), "anonymous")
+
+    def test_no_proxy_headers_is_elite(self):
+        self.assertEqual(_classify_anonymity(self.AZENV_CLEAN, self.MY_IP), "elite")
+
+    def test_underscore_and_dash_spellings_both_match(self):
+        json_style = b'{"headers": {"X-Forwarded-For": "198.51.100.9"}}'
+        self.assertEqual(_classify_anonymity(json_style, self.MY_IP), "anonymous")
+
+    def test_leak_beats_a_clean_via(self):
+        # Both signals present: leaking our address is the worse verdict.
+        body = b"HTTP_VIA = 1.1 squid\nHTTP_X_FORWARDED_FOR = 203.0.113.7\n"
+        self.assertEqual(_classify_anonymity(body, self.MY_IP), "transparent")
+
+    def test_without_a_known_local_ip_a_leak_is_not_detectable(self):
+        # my_ip empty → we cannot recognise our own address, so headers decide.
+        self.assertEqual(_classify_anonymity(self.AZENV_LEAKY, ""), "anonymous")
 
 
 class TestJudge(unittest.TestCase):

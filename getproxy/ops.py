@@ -31,17 +31,20 @@ class Context:
     revive_days: int = 7
     # Empty = skip the TLS probe entirely (it doubles the work per proxy).
     https_target: str = ""
+    # None = skip anonymity grading.
+    anon_judge: Judge | None = None
 
     @classmethod
     def build(cls, judge_url: str = DEFAULT_JUDGE, *, timeout: float = 8.0,
               connect_timeout: float = 5.0, fetch_timeout: float = 20.0,
               workers: int = 200, max_fails: int = 3, revive_days: int = 7,
-              https_target: str = "") -> "Context":
+              https_target: str = "", anon_judge_url: str = "") -> "Context":
         judge = Judge.parse(judge_url)
         return cls(judge=judge, my_ip=local_ip(judge, timeout),
                    timeout=timeout, connect_timeout=connect_timeout,
                    fetch_timeout=fetch_timeout, workers=workers, max_fails=max_fails,
-                   revive_days=revive_days, https_target=https_target)
+                   revive_days=revive_days, https_target=https_target,
+                   anon_judge=Judge.parse(anon_judge_url) if anon_judge_url else None)
 
 
 @dataclass(slots=True)
@@ -103,7 +106,7 @@ def preload(
         results = check_all(proxies, ctx.judge, timeout=ctx.timeout,
                             connect_timeout=ctx.connect_timeout,
                             workers=ctx.workers, my_ip=ctx.my_ip,
-                            https_target=ctx.https_target, on_progress=cb)
+                            https_target=ctx.https_target, anon_judge=ctx.anon_judge, on_progress=cb)
         store.record_many(results, max_fails=ctx.max_fails)
         out.checked += len(proxies)
         out.results.extend(results)
@@ -136,7 +139,7 @@ def recheck(
     results = check_all(proxies, ctx.judge, timeout=ctx.timeout,
                         connect_timeout=ctx.connect_timeout,
                         workers=ctx.workers, my_ip=ctx.my_ip,
-                        https_target=ctx.https_target, on_progress=on_progress)
+                        https_target=ctx.https_target, anon_judge=ctx.anon_judge, on_progress=on_progress)
     store.record_many(results, max_fails=ctx.max_fails)
     ok_keys = {r.proxy.key for r in results if r.ok}
 
@@ -200,6 +203,8 @@ def _matches(res: Result, filters: Filters) -> bool:
     if filters.anonymous_only and not res.anonymous:
         return False
     if filters.https_only and not res.https:
+        return False
+    if filters.elite_only and res.anonymity != "elite":
         return False
     if filters.max_latency_ms > 0 and res.latency_ms > filters.max_latency_ms:
         return False

@@ -135,6 +135,9 @@ class Result:
     anonymous: bool = False
     # Verified to carry a TLS session (only set when the probe ran).
     https: bool = False
+    # "elite" / "anonymous" / "transparent"; empty when not graded. Unlike the
+    # anonymous flag this accounts for headers, not just the echoed address.
+    anonymity: str = ""
     error: str = ""
     # The judge failed, not the proxy (rate limit, error payload). Such a result
     # must not count towards fail_count — see Store._apply.
@@ -153,6 +156,7 @@ class Result:
             "country_code": self.country_code,
             "country": self.country,
             "anonymous": self.anonymous,
+            "anonymity": self.anonymity,
             "https": self.https,
             "error": self.error,
         }
@@ -160,7 +164,7 @@ class Result:
     def __str__(self) -> str:
         if not self.ok:
             return f"{self.proxy.url:<25}  down ({self.error})"
-        tag = "anonymous" if self.anonymous else "transparent"
+        tag = self.anonymity or ("anonymous" if self.anonymous else "transparent")
         geo = f"[{self.country_code}] " if self.country_code else ""
         tls = " tls" if self.https else ""
         return f"{self.proxy.url:<25}  {self.latency_ms:>5}ms  {tag:<11}{tls}  {geo}exit={self.exit_ip}"
