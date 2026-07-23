@@ -19,9 +19,10 @@ from dataclasses import dataclass
 from typing import Callable
 from urllib.parse import urlsplit
 
+from . import __version__
 from .proxy import Protocol, Proxy, Result, is_ipv4
 
-_USER_AGENT = "getproxy/0.2 (+https://github.com/Tsunami43/getproxy)"
+_USER_AGENT = f"getproxy/{__version__} (+https://github.com/Tsunami43/getproxy)"
 _IPV4_RE = re.compile(rb"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
 # Default judge: ip-api.com returns JSON with query (IP) and countryCode. The
