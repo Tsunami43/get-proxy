@@ -383,14 +383,22 @@ def check_all(
     """
     total = len(proxies)
     results: list[Result] = []
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
-        futures = [ex.submit(check_one, p, judge, timeout, my_ip, connect_timeout,
-                             https_target=https_target, anon_judge=anon_judge)
-                   for p in proxies]
+    ex = ThreadPoolExecutor(max_workers=max(1, workers))
+    futures = [ex.submit(check_one, p, judge, timeout, my_ip, connect_timeout,
+                         https_target=https_target, anon_judge=anon_judge)
+               for p in proxies]
+    try:
         for done, fut in enumerate(as_completed(futures), start=1):
             results.append(fut.result())
             if on_progress is not None:
                 on_progress(done, total)
+    except KeyboardInterrupt:
+        # Drop queued work and return at once. The default context-manager exit
+        # would shutdown(wait=True) and join every in-flight socket — up to a
+        # full timeout each — turning Ctrl+C into a multi-second hang.
+        ex.shutdown(wait=False, cancel_futures=True)
+        raise
+    ex.shutdown(wait=True)
     # Live first (by latency), then the failures.
     results.sort(key=lambda r: (not r.ok, r.latency_ms))
     return results

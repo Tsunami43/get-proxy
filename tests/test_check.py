@@ -1,7 +1,10 @@
 """Tests for judge-body parsing and the Judge constructor (no network)."""
 
+import time
 import unittest
+from unittest import mock
 
+from getproxy import check
 from getproxy.check import (
     DEFAULT_JUDGE,
     Judge,
@@ -9,6 +12,7 @@ from getproxy.check import (
     _classify_anonymity,
     _parse_body,
 )
+from getproxy.proxy import Protocol, Proxy, Result
 
 
 class TestParseBody(unittest.TestCase):
@@ -86,6 +90,28 @@ class TestAnonymityGrading(unittest.TestCase):
     def test_without_a_known_local_ip_a_leak_is_not_detectable(self):
         # my_ip empty → we cannot recognise our own address, so headers decide.
         self.assertEqual(_classify_anonymity(self.AZENV_LEAKY, ""), "anonymous")
+
+
+class TestCheckAllInterrupt(unittest.TestCase):
+    """Ctrl+C must abort the batch promptly, not wait out every socket."""
+
+    def test_reraises_and_does_not_hang(self):
+        proxies = [Proxy(host=f"1.1.1.{i}", port=80, protocol=Protocol.HTTP)
+                   for i in range(8)]
+        judge = Judge.parse("http://judge.test/")
+        done = Result(proxy=proxies[0], ok=True, latency_ms=1, exit_ip="9.9.9.9")
+
+        # Stand in for the user hitting Ctrl+C after the first result lands.
+        def interrupt(_done, _total):
+            raise KeyboardInterrupt
+
+        started = time.monotonic()
+        with mock.patch.object(check, "check_one", return_value=done):
+            with self.assertRaises(KeyboardInterrupt):
+                check.check_all(proxies, judge, workers=8, on_progress=interrupt)
+        # Returning at all is the assertion; the bound guards against a
+        # regression that waits on the pool.
+        self.assertLess(time.monotonic() - started, 5)
 
 
 class TestJudge(unittest.TestCase):

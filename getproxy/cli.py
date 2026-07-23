@@ -307,8 +307,15 @@ def main() -> None:
     try:
         sys.exit(run(sys.argv[1:]))
     except KeyboardInterrupt:
-        print("\ngetproxy: interrupted", file=sys.stderr)
-        sys.exit(130)
+        # os._exit, not sys.exit: worker threads may still be blocked on slow
+        # sockets, and a normal exit runs the executor's atexit hook, which
+        # joins them — up to a full timeout — before the process can quit. That
+        # is exactly long enough for a second Ctrl+C to land mid-join and dump a
+        # threading traceback. Everything persisted is committed per batch, so
+        # skipping cleanup here is safe.
+        sys.stderr.write("\ngetproxy: interrupted\n")
+        sys.stderr.flush()
+        os._exit(130)
 
 
 if __name__ == "__main__":

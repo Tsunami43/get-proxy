@@ -37,6 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   silently shifted the others.
 - `Renderer` captured `sys.stdout` as a default argument at import time and
   ignored later redirection.
+- Ctrl+C during a scan now exits at once. The thread pool was joined on the way
+  out, so a single interrupt hung for up to a full timeout while in-flight
+  sockets drained, and a second interrupt landed mid-join and printed a
+  threading traceback.
+- The interactive menu no longer flickers on each keystroke: the screen is
+  repainted in place instead of being cleared before every frame.
 
 ### Changed
 - `--max-fails` defaults to 3 instead of 1. Free proxies are flaky, and with
