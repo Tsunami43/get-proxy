@@ -43,16 +43,6 @@ SOURCES: tuple[Source, ...] = (
     Source("https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks4.txt", Protocol.SOCKS4),
     Source("https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt", Protocol.SOCKS5),
 
-    # ShiftyTR/Proxy-List — hourly.
-    Source("https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt", Protocol.HTTP),
-    Source("https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks4.txt", Protocol.SOCKS4),
-    Source("https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks5.txt", Protocol.SOCKS5),
-
-    # mmpx12/proxy-list.
-    Source("https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt", Protocol.HTTP),
-    Source("https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks4.txt", Protocol.SOCKS4),
-    Source("https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks5.txt", Protocol.SOCKS5),
-
     # roosterkid/openproxylist — every 15 minutes.
     Source("https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt", Protocol.HTTP),
     Source("https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS4_RAW.txt", Protocol.SOCKS4),
@@ -61,38 +51,13 @@ SOURCES: tuple[Source, ...] = (
     # hookzof/socks5_list — SOCKS5 only, with geolocation.
     Source("https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt", Protocol.SOCKS5),
 
-    # jetkai/proxy-list — hourly.
-    Source("https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt", Protocol.HTTP),
-    Source("https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks4.txt", Protocol.SOCKS4),
-    Source("https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt", Protocol.SOCKS5),
-
     # proxifly/free-proxy-list — every 5 minutes (lines carry a scheme prefix).
     Source("https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt", Protocol.HTTP),
     Source("https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks4/data.txt", Protocol.SOCKS4),
     Source("https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.txt", Protocol.SOCKS5),
 
-    # vakhov/fresh-proxy-list — every 5-20 minutes.
-    Source("https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/http.txt", Protocol.HTTP),
-    Source("https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/socks4.txt", Protocol.SOCKS4),
-    Source("https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/socks5.txt", Protocol.SOCKS5),
-
-    # clarketm/proxy-list — daily (mixed list, treated as HTTP candidates).
-    Source("https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt", Protocol.HTTP),
-
-    # sunny9577/proxy-scraper.
+    # sunny9577/proxy-scraper — only the HTTP feed is populated upstream.
     Source("https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/generated/http_proxies.txt", Protocol.HTTP),
-    Source("https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/generated/socks4_proxies.txt", Protocol.SOCKS4),
-    Source("https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/generated/socks5_proxies.txt", Protocol.SOCKS5),
-
-    # prxchk/proxy-list — hourly.
-    Source("https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt", Protocol.HTTP),
-    Source("https://raw.githubusercontent.com/prxchk/proxy-list/main/socks4.txt", Protocol.SOCKS4),
-    Source("https://raw.githubusercontent.com/prxchk/proxy-list/main/socks5.txt", Protocol.SOCKS5),
-
-    # MuRongPIG/Proxy-Master.
-    Source("https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/http.txt", Protocol.HTTP),
-    Source("https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/socks4.txt", Protocol.SOCKS4),
-    Source("https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/socks5.txt", Protocol.SOCKS5),
 
     # zloi-user/hideip.me.
     Source("https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt", Protocol.HTTP),
@@ -127,17 +92,10 @@ class Repo:
 INDEX: tuple[Repo, ...] = (
     Repo("TheSpeedX/PROXY-List", "http/socks4/socks5", "daily"),
     Repo("monosans/proxy-list", "http/socks4/socks5 + geo", "hourly"),
-    Repo("ShiftyTR/Proxy-List", "http/socks4/socks5", "hourly"),
-    Repo("mmpx12/proxy-list", "http/socks4/socks5", "hourly"),
     Repo("roosterkid/openproxylist", "https/socks4/socks5", "every 15 min"),
     Repo("hookzof/socks5_list", "socks5 + geo", "regularly"),
-    Repo("jetkai/proxy-list", "all, many formats", "hourly"),
     Repo("proxifly/free-proxy-list", "http/socks4/socks5 + API", "every 5 min"),
-    Repo("vakhov/fresh-proxy-list", "all, many formats", "5-20 min"),
-    Repo("clarketm/proxy-list", "mixed list", "daily"),
-    Repo("sunny9577/proxy-scraper", "all", "regularly"),
-    Repo("prxchk/proxy-list", "http/socks4/socks5", "hourly"),
-    Repo("MuRongPIG/Proxy-Master", "http/socks4/socks5", "regularly"),
+    Repo("sunny9577/proxy-scraper", "http", "regularly"),
     Repo("zloi-user/hideip.me", "http/socks4/socks5", "regularly"),
     Repo("Zaeem20/FREE_PROXIES_LIST", "http/socks4/socks5", "regularly"),
     Repo("ProxyScrape API v2", "http/socks4/socks5", "every 5 min"),

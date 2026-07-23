@@ -9,7 +9,7 @@
 
 **Grab a working free proxy in one command.**
 
-getproxy gathers fresh free proxies from 17 public lists (45 feeds), checks
+getproxy gathers fresh free proxies from 10 public lists (24 feeds), checks
 which ones actually work, and hands you a live one, filtered by country if you
 like. It records what works and marks what dies, so the next run starts from
 proxies it already trusts instead of re-testing the whole list.

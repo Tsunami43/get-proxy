@@ -51,7 +51,9 @@ class TestRegistry(unittest.TestCase):
         self.assertEqual(len(urls), len(set(urls)))
 
     def test_index_nonempty(self):
-        self.assertGreaterEqual(len(INDEX), 15)
+        # Sources die and get pruned over time; this is a populated-registry
+        # smoke check, not an exact count.
+        self.assertGreaterEqual(len(INDEX), 5)
 
 
 if __name__ == "__main__":

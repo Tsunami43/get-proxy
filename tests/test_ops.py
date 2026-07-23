@@ -45,18 +45,23 @@ class _OpsCase(unittest.TestCase):
         self.store = Store(":memory:")
         self.addCleanup(self.store.close)
 
+    def _patch(self, *args, **kwargs):
+        """Start a patcher and stop it on teardown (TestCase.enterContext is 3.11+)."""
+        patcher = mock.patch.object(*args, **kwargs)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def patch(self, *, pool=None, results=None):
         """Patch the two network entry points ops calls."""
         if pool is not None:
-            self.enterContext(mock.patch.object(ops, "fetch_all", return_value=pool))
+            self._patch(ops, "fetch_all", return_value=pool)
         if results is not None:
             select = lambda proxies, *a, **kw: [r for r in results if r.proxy in proxies]
             checker = mock.Mock(side_effect=select)
-            self.enterContext(mock.patch.object(ops, "check_all", checker))
+            self._patch(ops, "check_all", checker)
             # find_one streams instead of batching; a list is a fine stand-in
             # for the generator, and an early break just stops iterating it.
-            self.enterContext(mock.patch.object(ops, "check_iter",
-                                                mock.Mock(side_effect=select)))
+            self._patch(ops, "check_iter", mock.Mock(side_effect=select))
             return checker
         return None
 
