@@ -6,12 +6,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Anonymity grading (`--check-anonymity`): fetches a header-echoing judge through
+  the proxy and reports `elite` / `anonymous` / `transparent`. The old `anonymous`
+  flag only compared exit addresses and could not see an `X-Forwarded-For` leak.
+  `--elite` filters to proxies that add no proxy headers at all.
+- TLS verification (`--verify-https`): probes CONNECT plus a handshake to
+  `--https-target`, because relaying port 80 does not imply tunnelling 443.
+  `--https-only` filters on it. A failed probe does not fail the proxy.
+- `--raw` prints bare proxy URLs, so `export HTTP_PROXY=$(getproxy -g --raw)`
+  needs no `jq`.
+- `--revive-after DAYS` (7) returns long-dead proxies to `unknown` instead of
+  leaving `dead` permanent.
+- Schema migration: new columns are added to existing stores rather than
+  requiring the database to be deleted.
+- Tests for `ops` and the CLI output modes, both previously uncovered.
+
 ### Fixed
 - Dropped proxies are now actually recorded as `dead`. `check_all` used to
   discard every failed check, so `--recheck` never persisted a `dead` status and
   the "no longer checked" promise was not kept. Failures now flow to the store.
+- A rate-limited judge no longer kills healthy proxies. ip-api answers
+  `{"status":"fail"}` or 429 when throttled; that was recorded as a proxy
+  failure and, with `--max-fails` defaulting to 1, marked the proxy permanently
+  dead. Judge refusals are now separated from proxy failures and leave the
+  record untouched.
+- `preload` records the whole fetched pool, not only what `--limit` reached, so
+  a limited run no longer discards the rest of the feeds.
+- `Store.best()` rebuilt `Filters` positionally, so adding a field would have
+  silently shifted the others.
+- `Renderer` captured `sys.stdout` as a default argument at import time and
+  ignored later redirection.
 
 ### Changed
+- `--max-fails` defaults to 3 instead of 1. Free proxies are flaky, and with
+  judge noise filtered out the counter now measures the proxy.
 - Preload and `--get` skip known-dead proxies before checking, so accumulated
   `dead` records make every subsequent run faster instead of re-testing corpses.
 - Split TCP connect from read timeout for SOCKS checks (`--connect-timeout`,
