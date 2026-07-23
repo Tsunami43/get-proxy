@@ -25,7 +25,7 @@ from .ui import Renderer
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="getproxy",
-        description="Fresh free proxies from 17+ public sources — no API keys.",
+        description="Fresh free proxies from 17 public sources (45 feeds), no API keys.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"

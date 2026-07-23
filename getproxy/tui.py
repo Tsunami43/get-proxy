@@ -1,4 +1,4 @@
-"""Tiny TUI on the pure standard library: a truecolor theme, boxes and an
+"""Tiny TUI on the pure standard library: 16-colour theme, boxes and an
 arrow-key menu (opencode-style), with no third-party dependencies.
 
 On a POSIX terminal it uses raw mode (`termios`) to read arrow keys; where a
@@ -24,28 +24,22 @@ except ImportError:  # non-POSIX
 _ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 
 
-# --- palette (24-bit truecolor) --------------------------------------------
-
-def _fg(r: int, g: int, b: int) -> str:
-    return f"\033[38;2;{r};{g};{b}m"
-
-
-def _bg(r: int, g: int, b: int) -> str:
-    return f"\033[48;2;{r};{g};{b}m"
-
+# --- palette (16-colour ANSI) ----------------------------------------------
+#
+# Colours are named, not RGB, so they resolve against whatever theme the user
+# already runs in their terminal instead of imposing our own hues on it.
+# One accent (cyan); everything else is either neutral or a status signal.
 
 RESET = "\033[0m"
 BOLD = "\033[1m"
 DIM = "\033[2m"
 
-ACCENT = _fg(139, 120, 255)   # violet — accent
-ACCENT2 = _fg(94, 234, 212)   # teal
-TEXT = _fg(220, 220, 230)
-MUTED = _fg(120, 120, 140)
-GOOD = _fg(74, 222, 128)
-WARN = _fg(250, 204, 21)
-BAD = _fg(248, 113, 113)
-SELBG = _bg(48, 42, 78)       # background of the selected row
+ACCENT = "\033[36m"   # cyan — the single accent
+TEXT = "\033[39m"     # the terminal's default foreground
+MUTED = "\033[90m"
+GOOD = "\033[32m"
+WARN = "\033[33m"
+BAD = "\033[31m"
 
 
 def _no_color() -> bool:
@@ -188,10 +182,10 @@ def _render(title: str, options: list[Option], idx: int, subtitle: str, header: 
         lines.append("")
     for i, opt in enumerate(options):
         selected = i == idx
-        pointer = color(ACCENT2 + BOLD, "❯") if selected else " "
+        pointer = color(ACCENT + BOLD, "❯") if selected else " "
         label = opt.label + " " * (labelw - visible_len(opt.label))
         if selected:
-            label = color(BOLD + ACCENT2, label)
+            label = color(BOLD + ACCENT, label)
             hint = color(TEXT, opt.hint)
         else:
             label = color(TEXT, label)
@@ -227,7 +221,7 @@ def prompt(text: str, default: str = "") -> str:
     """Single-line input with a default-value hint."""
     suffix = f" [{default}]" if default else ""
     try:
-        val = input(color(ACCENT2, "› ") + text + color(MUTED, suffix) + ": ").strip()
+        val = input(color(ACCENT, "› ") + text + color(MUTED, suffix) + ": ").strip()
     except EOFError:
         return default
     return val or default

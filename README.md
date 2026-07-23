@@ -9,14 +9,13 @@
 
 **Grab a working free proxy in one command.**
 
-getproxy gathers fresh free proxies from 17+ public lists, checks which ones
-actually work, and hands you a live one — by country if you like. It remembers
-what works and forgets what dies, so next time you get a proxy instantly.
+getproxy gathers fresh free proxies from 17 public lists (45 feeds), checks
+which ones actually work, and hands you a live one, filtered by country if you
+like. It records what works and marks what dies, so the next run starts from
+proxies it already trusts instead of re-testing the whole list.
 
-No signup, no API keys, no dependencies. Just Python.
-
----
-
+Runs on the Python standard library alone: no signup, no API key, no `pip
+install` of anything else.
 
 ## Quick start
 
@@ -43,8 +42,6 @@ That opens the menu:
   ↑/↓ move · enter select · q quit
 ```
 
----
-
 ## From the command line
 
 ```sh
@@ -58,15 +55,11 @@ getproxy --sources             # where the proxies come from
 
 Run `getproxy --help` for every flag.
 
----
-
 ## A word of caution
 
 Free proxies are run by strangers — they can watch or tamper with your traffic.
 **Never send passwords or payments through them.** getproxy marks which proxies
 are anonymous and which leak your real IP, but treat them as throwaway.
-
----
 
 ## License
 

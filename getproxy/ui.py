@@ -17,7 +17,7 @@ BANNER = """
 ██║   ██║██╔══╝     ██║   ██╔═══╝ ██╔══██╗██║   ██║ ██╔██╗   ╚██╔╝
 ╚██████╔╝███████╗   ██║   ██║     ██║  ██║╚██████╔╝██╔╝ ██╗   ██║
  ╚═════╝ ╚══════╝   ╚═╝   ╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝
-        fresh free proxies from 17+ public sources
+        fresh free proxies from 17 public sources
 """
 
 
@@ -32,7 +32,6 @@ class Palette:
     green: str = ""
     yellow: str = ""
     cyan: str = ""
-    magenta: str = ""
 
 
 _ENABLED = Palette(
@@ -43,7 +42,6 @@ _ENABLED = Palette(
     green="\033[32m",
     yellow="\033[33m",
     cyan="\033[36m",
-    magenta="\033[35m",
 )
 
 
@@ -74,7 +72,7 @@ class Renderer:
 
     def banner(self) -> None:
         p = self.p
-        self.line(f"{p.magenta}{p.bold}{BANNER}{p.reset}")
+        self.line(f"{p.cyan}{p.bold}{BANNER}{p.reset}")
 
     def info(self, text: str) -> None:
         self.line(f"{self.p.cyan}›{self.p.reset} {text}")

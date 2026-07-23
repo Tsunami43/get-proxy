@@ -14,14 +14,14 @@ from .proxy import ALL_PROTOCOLS, Protocol, Result
 from .sources import INDEX, SOURCES
 from .store import STATUS_WORKING, Filters, Store
 
-_HEADER = "  getproxy · fresh free proxies from 17+ sources"
+_HEADER = "  getproxy · fresh free proxies from 17 sources (45 feeds)"
 
 
 def _progress(label: str):
     """Single-line progress callback for operations."""
     def cb(done: int, total: int) -> None:
         pct = (done / total * 100) if total else 100.0
-        sys.stdout.write(f"\r\033[K  {tui.color(tui.ACCENT2, label)}: {done}/{total} ({pct:3.0f}%)")
+        sys.stdout.write(f"\r\033[K  {tui.color(tui.ACCENT, label)}: {done}/{total} ({pct:3.0f}%)")
         if done >= total:
             sys.stdout.write("\n")
         sys.stdout.flush()
@@ -33,14 +33,14 @@ def _print_proxy(res: Result) -> None:
     tag = tui.color(tui.GOOD, "anonymous") if res.anonymous else tui.color(tui.WARN, "transparent")
     geo = f"{res.country_code} {res.country}".strip() or "—"
     lines = [
-        tui.color(tui.BOLD + tui.ACCENT2, res.proxy.url),
+        tui.color(tui.BOLD + tui.ACCENT, res.proxy.url),
         "",
         f"{tui.color(tui.MUTED, 'protocol ')}{res.proxy.protocol}",
         f"{tui.color(tui.MUTED, 'latency  ')}{res.latency_ms} ms",
         f"{tui.color(tui.MUTED, 'country  ')}{geo}",
         f"{tui.color(tui.MUTED, 'exit     ')}{res.exit_ip}  ({tag})",
     ]
-    print(tui.panel("proxy", lines, accent=tui.GOOD))
+    print(tui.panel("proxy", lines))
 
 
 def _print_table(proxies, store: Store, title: str) -> None:
@@ -55,7 +55,7 @@ def _print_table(proxies, store: Store, title: str) -> None:
         lat = row["latency_ms"] if row else 0
         anon = "anon" if (row and row["anonymous"]) else "clear"
         lines.append(
-            f"{tui.color(tui.ACCENT2, p.url):<34}  "
+            f"{tui.color(tui.ACCENT, p.url):<34}  "
             f"{tui.color(tui.MUTED, f'{lat:>5}ms')}  "
             f"{tui.color(tui.TEXT, f'[{cc}]')}  {tui.color(tui.MUTED, anon)}"
         )
@@ -184,13 +184,13 @@ class Menu:
             lines.append("")
             lines.append(tui.color(tui.MUTED, "top countries (working):"))
             lines.append("  " + "  ".join(f"{cc}:{n}" for cc, n in top))
-        print(tui.panel("statistics", lines, accent=tui.ACCENT2))
+        print(tui.panel("statistics", lines))
         tui.pause()
 
     def action_sources(self) -> None:
         lines = [tui.color(tui.MUTED, f"{'SOURCE':<26}{'PROTOCOLS':<26}UPDATED")]
         for repo in INDEX:
-            lines.append(f"{tui.color(tui.ACCENT2, repo.name):<26}"
+            lines.append(f"{tui.color(tui.ACCENT, repo.name):<26}"
                          f"{tui.color(tui.TEXT, repo.kinds):<26}{tui.color(tui.MUTED, repo.cadence)}")
         print(tui.panel(f"sources · {len(SOURCES)} feeds", lines))
         tui.pause()

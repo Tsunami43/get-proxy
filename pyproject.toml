@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "getproxy"
 version = "0.2.0"
-description = "Collect and check fresh free proxies from 17+ public sources, stdlib only"
+description = "Collect and check fresh free proxies from 17 public sources, stdlib only"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
