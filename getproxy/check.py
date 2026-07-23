@@ -25,6 +25,10 @@ from .proxy import Protocol, Proxy, Result, is_ipv4
 _USER_AGENT = f"getproxy/{__version__} (+https://github.com/Tsunami43/getproxy)"
 _IPV4_RE = re.compile(rb"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
+# Judge-side back-pressure: the endpoint is up but declining to answer right now.
+_JUDGE_BUSY_CODES = frozenset({429, 503})
+_JUDGE_BUSY_RE = re.compile(rb"^HTTP/1\.[01] (?:429|503)\b")
+
 # Default judge: ip-api.com returns JSON with query (IP) and countryCode. The
 # request goes THROUGH the proxy, so the country is that of the exit node — just
 # what the country filter needs. ip-api's rate limit is keyed by the requesting
@@ -59,6 +63,15 @@ class Judge:
         return cls(url=url, host=host, port=port, path=path)
 
 
+class JudgeError(Exception):
+    """The judge refused to answer — this says nothing about the proxy.
+
+    ip-api replies ``{"status":"fail"}`` when it rate-limits or dislikes a query,
+    and serves 429 once the per-IP quota is spent. Treating either as a proxy
+    failure would mark healthy proxies dead, so these are reported separately.
+    """
+
+
 def _extract_ip(body: bytes) -> str:
     """Pull the first valid IPv4 out of a judge response body."""
     m = _IPV4_RE.search(body)
@@ -72,15 +85,20 @@ def _parse_body(body: bytes) -> tuple[str, str, str]:
 
     Understands ip-api JSON ({"query","countryCode","country"}) and plain text
     with a bare IP (ipify). Country stays empty when the judge does not provide it.
+
+    Raises :class:`JudgeError` when the body is a judge-side refusal rather than
+    an answer about the proxy.
     """
     text = body.strip()
     if text[:1] == b"{":
         try:
             d = json.loads(text)
-            ip = d.get("query") or _extract_ip(body)
-            return ip, (d.get("countryCode") or ""), (d.get("country") or "")
         except Exception:
-            pass
+            return _extract_ip(body), "", ""
+        if d.get("status") == "fail":
+            raise JudgeError(f"judge refused: {d.get('message') or 'unknown reason'}")
+        ip = d.get("query") or _extract_ip(body)
+        return ip, (d.get("countryCode") or ""), (d.get("country") or "")
     return _extract_ip(body), "", ""
 
 
@@ -175,6 +193,8 @@ def _check_socks(proxy: Proxy, judge: Judge, timeout: float, connect_timeout: fl
     head, _, body = bytes(data).partition(b"\r\n\r\n")
     if not body:
         raise OSError("empty judge response over socks")
+    if _JUDGE_BUSY_RE.search(head):
+        raise JudgeError("judge rate-limited the request")
     return _parse_body(body)
 
 
@@ -184,8 +204,13 @@ def _check_http(proxy: Proxy, judge: Judge, timeout: float) -> tuple[str, str, s
     handler = urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
     opener = urllib.request.build_opener(handler)
     req = urllib.request.Request(judge.url, headers={"User-Agent": _USER_AGENT})
-    with opener.open(req, timeout=timeout) as resp:  # noqa: S310
-        return _parse_body(resp.read(8192))
+    try:
+        with opener.open(req, timeout=timeout) as resp:  # noqa: S310
+            return _parse_body(resp.read(8192))
+    except urllib.error.HTTPError as exc:
+        if exc.code in _JUDGE_BUSY_CODES:
+            raise JudgeError(f"judge returned HTTP {exc.code}") from exc
+        raise
 
 
 def check_one(proxy: Proxy, judge: Judge, timeout: float, my_ip: str = "",
@@ -204,6 +229,12 @@ def check_one(proxy: Proxy, judge: Judge, timeout: float, my_ip: str = "",
             exit_ip, cc, country = _check_http(proxy, judge, timeout)
         else:
             exit_ip, cc, country = _check_socks(proxy, judge, timeout, connect_timeout)
+    except JudgeError as exc:
+        # The proxy carried the request; the judge declined to answer. Verdict
+        # unknown, so leave the record's status and fail_count alone.
+        result.judge_error = True
+        result.error = str(exc)
+        return result
     except Exception as exc:
         result.error = f"{type(exc).__name__}: {exc}"
         return result

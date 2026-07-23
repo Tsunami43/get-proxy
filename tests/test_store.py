@@ -1,6 +1,7 @@
 """Tests for the persistent store: statuses, filters, dead logic."""
 
 import unittest
+from datetime import datetime, timedelta, timezone
 
 from getproxy.proxy import Protocol, Proxy, Result
 from getproxy.store import (
@@ -23,6 +24,10 @@ def _ok(proxy, latency=100, cc="RU", anon=True):
 
 def _fail(proxy):
     return Result(proxy=proxy, ok=False, error="timeout")
+
+
+def _judge_error(proxy):
+    return Result(proxy=proxy, ok=False, error="judge refused: rate limit", judge_error=True)
 
 
 class TestStore(unittest.TestCase):
@@ -96,6 +101,88 @@ class TestStore(unittest.TestCase):
         row = self.store.details(p.key)
         self.assertEqual(row["fail_count"], 0)
         self.assertEqual(row["status"], STATUS_WORKING)
+
+
+class TestJudgeErrorIsNotProxyFailure(unittest.TestCase):
+    """A refusal by the judge must never count against the proxy."""
+
+    def setUp(self):
+        self.store = Store(":memory:")
+
+    def tearDown(self):
+        self.store.close()
+
+    def test_does_not_increment_fail_count(self):
+        p = _proxy()
+        self.store.record(_ok(p))
+        status = self.store.record(_judge_error(p), max_fails=1)
+        self.assertEqual(status, STATUS_WORKING)
+        row = self.store.details(p.key)
+        self.assertEqual(row["fail_count"], 0)
+
+    def test_cannot_kill_a_proxy_even_at_max_fails_one(self):
+        p = _proxy()
+        self.store.record(_ok(p))
+        for _ in range(5):
+            self.store.record(_judge_error(p), max_fails=1)
+        self.assertEqual(self.store.details(p.key)["status"], STATUS_WORKING)
+        self.assertIsNotNone(self.store.best(Filters()))
+
+    def test_records_the_attempt(self):
+        p = _proxy()
+        self.store.record(_ok(p))
+        before = self.store.details(p.key)["last_checked"]
+        self.store.record(_judge_error(p))
+        self.assertNotEqual(self.store.details(p.key)["last_checked"], "")
+        self.assertIsNotNone(before)
+
+    def test_unknown_proxy_is_not_inserted(self):
+        # Nothing was learned, so there is nothing to write down.
+        self.assertEqual(self.store.record(_judge_error(_proxy())), STATUS_UNKNOWN)
+        self.assertEqual(self.store.total(), 0)
+
+
+class TestReviveDead(unittest.TestCase):
+    def setUp(self):
+        self.store = Store(":memory:")
+
+    def tearDown(self):
+        self.store.close()
+
+    def _kill(self, proxy, days_ago):
+        self.store.record(_fail(proxy), max_fails=1)
+        stamp = (datetime.now(timezone.utc) - timedelta(days=days_ago)).replace(
+            microsecond=0).isoformat()
+        self.store.db.execute("UPDATE proxies SET last_checked=? WHERE key=?",
+                              (stamp, proxy.key))
+        self.store.db.commit()
+
+    def test_revives_only_the_stale(self):
+        old, fresh = _proxy("1.1.1.1"), _proxy("2.2.2.2")
+        self._kill(old, days_ago=30)
+        self._kill(fresh, days_ago=1)
+        self.assertEqual(self.store.revive_dead(7), 1)
+        self.assertEqual(self.store.details(old.key)["status"], STATUS_UNKNOWN)
+        self.assertEqual(self.store.details(fresh.key)["status"], STATUS_DEAD)
+
+    def test_revived_proxy_leaves_the_skip_set(self):
+        p = _proxy()
+        self._kill(p, days_ago=30)
+        self.assertIn(p.key, self.store.dead_keys())
+        self.store.revive_dead(7)
+        self.assertNotIn(p.key, self.store.dead_keys())
+
+    def test_resets_fail_count_so_it_gets_a_full_budget(self):
+        p = _proxy()
+        self._kill(p, days_ago=30)
+        self.store.revive_dead(7)
+        self.assertEqual(self.store.details(p.key)["fail_count"], 0)
+
+    def test_zero_disables_the_sweep(self):
+        p = _proxy()
+        self._kill(p, days_ago=999)
+        self.assertEqual(self.store.revive_dead(0), 0)
+        self.assertEqual(self.store.details(p.key)["status"], STATUS_DEAD)
 
 
 if __name__ == "__main__":

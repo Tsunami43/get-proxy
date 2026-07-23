@@ -134,6 +134,9 @@ class Result:
     country: str = ""
     anonymous: bool = False
     error: str = ""
+    # The judge failed, not the proxy (rate limit, error payload). Such a result
+    # must not count towards fail_count — see Store._apply.
+    judge_error: bool = False
 
     def to_dict(self) -> dict:
         """Serialisable representation for the JSON report."""

@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from .proxy import Protocol, Proxy, Result
 
@@ -117,7 +117,17 @@ class Store:
     def _apply(self, result: Result, max_fails: int, now: str) -> str:
         """Apply one check outcome to the DB (no commit). Returns the new status."""
         p = result.proxy
-        row = self.db.execute("SELECT fail_count FROM proxies WHERE key=?", (p.key,)).fetchone()
+        row = self.db.execute("SELECT status, fail_count FROM proxies WHERE key=?", (p.key,)).fetchone()
+
+        # A judge-side refusal is not evidence against the proxy: record that we
+        # tried and leave the verdict untouched, or the store would fill up with
+        # proxies killed by someone else's rate limit.
+        if result.judge_error:
+            if row is None:
+                return STATUS_UNKNOWN
+            self.db.execute("UPDATE proxies SET last_checked=? WHERE key=?", (now, p.key))
+            return row["status"]
+
         if row is None:
             self.db.execute(
                 "INSERT INTO proxies(key,protocol,host,port,status,first_seen,last_seen) "
@@ -145,7 +155,7 @@ class Store:
         )
         return status
 
-    def record(self, result: Result, *, max_fails: int = 1) -> str:
+    def record(self, result: Result, *, max_fails: int = 3) -> str:
         """Record a check outcome and return the resulting record status.
 
         Success → ``working`` (fail_count reset). Failure → increment fail_count;
@@ -156,7 +166,7 @@ class Store:
         self.db.commit()
         return status
 
-    def record_many(self, results: list[Result], *, max_fails: int = 1) -> None:
+    def record_many(self, results: list[Result], *, max_fails: int = 3) -> None:
         """Record many outcomes in a single transaction (one commit for the batch).
 
         Prefer this over a ``record`` loop: one commit means one fsync instead of
@@ -166,6 +176,26 @@ class Store:
         for r in results:
             self._apply(r, max_fails, now)
         self.db.commit()
+
+    def revive_dead(self, older_than_days: int) -> int:
+        """Return long-dead proxies to ``unknown`` so they get another chance.
+
+        Without this, ``dead`` is a life sentence: a proxy killed by one bad
+        night is skipped forever and the candidate pool only ever shrinks. Free
+        proxies come back, so anything not re-tested in ``older_than_days`` is
+        worth one more look. 0 disables the sweep.
+        """
+        if older_than_days <= 0:
+            return 0
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=older_than_days)).replace(
+            microsecond=0).isoformat()
+        cur = self.db.execute(
+            "UPDATE proxies SET status=?, fail_count=0 "
+            "WHERE status=? AND last_checked != '' AND last_checked < ?",
+            (STATUS_UNKNOWN, STATUS_DEAD, cutoff),
+        )
+        self.db.commit()
+        return cur.rowcount
 
     def purge_dead(self) -> int:
         """Delete dead records from the DB. Returns the number removed."""

@@ -80,7 +80,7 @@ class Menu:
     """State and loop of the interactive menu."""
 
     def __init__(self, store: Store, judge_url: str, *, timeout: float = 8.0,
-                 connect_timeout: float = 5.0, workers: int = 200, max_fails: int = 1) -> None:
+                 connect_timeout: float = 5.0, workers: int = 200, max_fails: int = 3) -> None:
         self.store = store
         self.judge_url = judge_url
         self.timeout = timeout

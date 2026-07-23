@@ -27,16 +27,18 @@ class Context:
     connect_timeout: float = 5.0
     fetch_timeout: float = 20.0
     workers: int = 200
-    max_fails: int = 1
+    max_fails: int = 3
+    revive_days: int = 7
 
     @classmethod
     def build(cls, judge_url: str = DEFAULT_JUDGE, *, timeout: float = 8.0,
               connect_timeout: float = 5.0, fetch_timeout: float = 20.0,
-              workers: int = 200, max_fails: int = 1) -> "Context":
+              workers: int = 200, max_fails: int = 3, revive_days: int = 7) -> "Context":
         judge = Judge.parse(judge_url)
         return cls(judge=judge, my_ip=local_ip(judge, timeout),
                    timeout=timeout, connect_timeout=connect_timeout,
-                   fetch_timeout=fetch_timeout, workers=workers, max_fails=max_fails)
+                   fetch_timeout=fetch_timeout, workers=workers, max_fails=max_fails,
+                   revive_days=revive_days)
 
 
 @dataclass(slots=True)
@@ -46,6 +48,7 @@ class PreloadResult:
     feeds_total: int = 0
     checked: int = 0
     skipped_dead: int = 0
+    revived: int = 0
     results: list[Result] = field(default_factory=list)
 
 
@@ -69,6 +72,9 @@ def preload(
     out = PreloadResult(fetched=pool.total, feeds_ok=feeds_ok, feeds_total=len(pool.stats))
     if on_fetch_done:
         on_fetch_done(pool.total, feeds_ok, len(pool.stats))
+
+    # Give long-dead proxies another chance before we decide what to skip.
+    out.revived = store.revive_dead(ctx.revive_days)
 
     # Skip proxies already known to be dead — no point burning a timeout on them.
     dead = store.dead_keys()
@@ -150,6 +156,7 @@ def find_one(
     # 2) Scan of fresh sources.
     want = filters.protocols
     pool = fetch_all(want, timeout=ctx.fetch_timeout, workers=32)
+    store.revive_dead(ctx.revive_days)
     dead = store.dead_keys()
     candidates: list[Proxy] = []
     for proto in _order(want):

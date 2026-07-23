@@ -59,7 +59,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--fetch-timeout", type=float, default=20.0, help="per-source fetch timeout, s (20)")
     p.add_argument("-w", "--workers", type=int, default=200, help="parallel checks (200)")
     p.add_argument("-j", "--judge", default=DEFAULT_JUDGE, help="http judge echoing IP+country")
-    p.add_argument("--max-fails", type=int, default=1, help="failures before marking dead (default 1)")
+    p.add_argument("--max-fails", type=int, default=3, help="failures before marking dead (default 3)")
+    p.add_argument("--revive-after", type=int, default=7, metavar="DAYS",
+                   help="retry dead proxies untouched for this long, 0 = never (7)")
     p.add_argument("--db", default="", metavar="PATH", help=f"DB path (default {default_path()})")
 
     # Output.
@@ -141,7 +143,7 @@ def _save(out_dir: str, results: list[Result], r: Renderer) -> None:
 
 def _mode_get(args, store, want, r) -> int:
     ctx = Context.build(args.judge, timeout=args.timeout, connect_timeout=args.connect_timeout,
-                        workers=args.workers, max_fails=args.max_fails)
+                        workers=args.workers, max_fails=args.max_fails, revive_days=args.revive_after)
     res = find_one(store, ctx, _filters(args, want))
     if args.json:
         json.dump(res.to_dict() if res else None, sys.stdout, ensure_ascii=False, indent=2)
@@ -155,7 +157,7 @@ def _mode_get(args, store, want, r) -> int:
 
 def _mode_recheck(args, store, r) -> int:
     ctx = Context.build(args.judge, timeout=args.timeout, connect_timeout=args.connect_timeout,
-                        workers=args.workers, max_fails=args.max_fails)
+                        workers=args.workers, max_fails=args.max_fails, revive_days=args.revive_after)
     cb = None if args.json else (lambda d, t: r.progress("recheck", d, t))
     out = recheck(store, ctx, on_progress=cb)
     if args.json:
@@ -199,7 +201,7 @@ def _mode_preload(args, store, want, r) -> int:
         r.banner()
         r.info(f"Fetching sources ({'all' if want is None else ', '.join(map(str, _order(want)))})…")
     ctx = Context.build(args.judge, timeout=args.timeout, connect_timeout=args.connect_timeout,
-                        fetch_timeout=args.fetch_timeout, workers=args.workers, max_fails=args.max_fails)
+                        fetch_timeout=args.fetch_timeout, workers=args.workers, max_fails=args.max_fails, revive_days=args.revive_after)
     if not args.json:
         r.info(f"My external IP: {ctx.my_ip or 'unknown'}  |  judge: {ctx.judge.url}")
 
@@ -246,7 +248,7 @@ def run(argv: list[str]) -> int:
             from .menu import Menu
             return Menu(store, args.judge, timeout=args.timeout,
                         connect_timeout=args.connect_timeout,
-                        workers=args.workers, max_fails=args.max_fails).run()
+                        workers=args.workers, max_fails=args.max_fails, revive_days=args.revive_after).run()
         if args.get:
             return _mode_get(args, store, want, r)
         if args.recheck:

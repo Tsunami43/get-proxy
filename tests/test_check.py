@@ -2,7 +2,7 @@
 
 import unittest
 
-from getproxy.check import DEFAULT_JUDGE, Judge, _parse_body
+from getproxy.check import DEFAULT_JUDGE, Judge, JudgeError, _parse_body
 
 
 class TestParseBody(unittest.TestCase):
@@ -26,6 +26,27 @@ class TestParseBody(unittest.TestCase):
     def test_broken_json_falls_back_to_regex(self):
         ip, _, _ = _parse_body(b'{"query":"9.9.9.9" broken')
         self.assertEqual(ip, "9.9.9.9")
+
+
+class TestJudgeRefusal(unittest.TestCase):
+    """ip-api answers {"status":"fail"} when it rate-limits; that is not a proxy fault."""
+
+    def test_fail_payload_raises(self):
+        with self.assertRaises(JudgeError):
+            _parse_body(b'{"status":"fail","message":"rate limit exceeded"}')
+
+    def test_message_is_carried(self):
+        with self.assertRaises(JudgeError) as caught:
+            _parse_body(b'{"status":"fail","message":"reserved range"}')
+        self.assertIn("reserved range", str(caught.exception))
+
+    def test_success_payload_does_not_raise(self):
+        ip, cc, _ = _parse_body(b'{"status":"success","query":"5.6.7.8","countryCode":"RU"}')
+        self.assertEqual((ip, cc), ("5.6.7.8", "RU"))
+
+    def test_plain_body_without_ip_is_a_proxy_fault_not_a_judge_one(self):
+        # No JudgeError here: an unparseable body means the proxy mangled it.
+        self.assertEqual(_parse_body(b"<html>blocked</html>")[0], "")
 
 
 class TestJudge(unittest.TestCase):
