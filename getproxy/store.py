@@ -114,14 +114,8 @@ class Store:
         self.db.commit()
         return new
 
-    def record(self, result: Result, *, max_fails: int = 1) -> str:
-        """Record a check outcome and return the resulting record status.
-
-        Success → ``working`` (fail_count reset). Failure → increment fail_count;
-        once it reaches ``max_fails`` the status becomes ``dead`` (the proxy will
-        no longer be checked). The row is created if it did not exist.
-        """
-        now = _now()
+    def _apply(self, result: Result, max_fails: int, now: str) -> str:
+        """Apply one check outcome to the DB (no commit). Returns the new status."""
         p = result.proxy
         row = self.db.execute("SELECT fail_count FROM proxies WHERE key=?", (p.key,)).fetchone()
         if row is None:
@@ -141,20 +135,37 @@ class Store:
                 (STATUS_WORKING, result.country_code, result.country, result.exit_ip,
                  int(result.anonymous), result.latency_ms, now, now, p.key),
             )
-            status = STATUS_WORKING
-        else:
-            fails += 1
-            status = STATUS_DEAD if fails >= max_fails else STATUS_UNKNOWN
-            self.db.execute(
-                "UPDATE proxies SET status=?, fail_count=?, last_checked=? WHERE key=?",
-                (status, fails, now, p.key),
-            )
+            return STATUS_WORKING
+
+        fails += 1
+        status = STATUS_DEAD if fails >= max_fails else STATUS_UNKNOWN
+        self.db.execute(
+            "UPDATE proxies SET status=?, fail_count=?, last_checked=? WHERE key=?",
+            (status, fails, now, p.key),
+        )
+        return status
+
+    def record(self, result: Result, *, max_fails: int = 1) -> str:
+        """Record a check outcome and return the resulting record status.
+
+        Success → ``working`` (fail_count reset). Failure → increment fail_count;
+        once it reaches ``max_fails`` the status becomes ``dead`` (the proxy will
+        no longer be checked). The row is created if it did not exist.
+        """
+        status = self._apply(result, max_fails, _now())
         self.db.commit()
         return status
 
     def record_many(self, results: list[Result], *, max_fails: int = 1) -> None:
+        """Record many outcomes in a single transaction (one commit for the batch).
+
+        Prefer this over a ``record`` loop: one commit means one fsync instead of
+        one per proxy, which matters on batches of thousands.
+        """
+        now = _now()
         for r in results:
-            self.record(r, max_fails=max_fails)
+            self._apply(r, max_fails, now)
+        self.db.commit()
 
     def purge_dead(self) -> int:
         """Delete dead records from the DB. Returns the number removed."""
@@ -201,6 +212,11 @@ class Store:
         """
         f = filters or Filters()
         return self.query(f, statuses=(STATUS_WORKING, STATUS_UNKNOWN), checked_only=True)
+
+    def dead_keys(self) -> set[str]:
+        """Keys of proxies marked ``dead`` — cheap set to skip on the next run."""
+        rows = self.db.execute("SELECT key FROM proxies WHERE status=?", (STATUS_DEAD,)).fetchall()
+        return {r["key"] for r in rows}
 
     def best(self, filters: Filters) -> Proxy | None:
         """Best working proxy under the filters (lowest latency) or None."""

@@ -142,9 +142,14 @@ def _socks4_connect(sock: socket.socket, host: str, port: int) -> None:
         raise OSError(f"socks4: CONNECT refused (code {rep[1]})")
 
 
-def _check_socks(proxy: Proxy, judge: Judge, timeout: float) -> tuple[str, str, str]:
-    """Send a judge request through a SOCKS proxy, return (ip, cc, country)."""
-    with socket.create_connection((proxy.host, proxy.port), timeout=timeout) as sock:
+def _check_socks(proxy: Proxy, judge: Judge, timeout: float, connect_timeout: float) -> tuple[str, str, str]:
+    """Send a judge request through a SOCKS proxy, return (ip, cc, country).
+
+    The TCP connect uses ``connect_timeout`` (usually shorter): most dead proxies
+    fail right at the handshake, so a tighter connect budget drops them faster
+    without shortening the read budget for proxies that do answer.
+    """
+    with socket.create_connection((proxy.host, proxy.port), timeout=connect_timeout) as sock:
         sock.settimeout(timeout)
         if proxy.protocol is Protocol.SOCKS5:
             _socks5_connect(sock, judge.host, judge.port)
@@ -183,15 +188,22 @@ def _check_http(proxy: Proxy, judge: Judge, timeout: float) -> tuple[str, str, s
         return _parse_body(resp.read(8192))
 
 
-def check_one(proxy: Proxy, judge: Judge, timeout: float, my_ip: str = "") -> Result:
-    """Check a single proxy and return a :class:`Result` with latency and exit IP."""
+def check_one(proxy: Proxy, judge: Judge, timeout: float, my_ip: str = "",
+              connect_timeout: float | None = None) -> Result:
+    """Check a single proxy and return a :class:`Result` with latency and exit IP.
+
+    ``connect_timeout`` bounds the TCP connect for SOCKS proxies; it falls back
+    to ``timeout`` so a single budget covers both phases when only one is given.
+    """
+    if connect_timeout is None:
+        connect_timeout = timeout
     result = Result(proxy=proxy)
     started = time.monotonic()
     try:
         if proxy.protocol is Protocol.HTTP:
             exit_ip, cc, country = _check_http(proxy, judge, timeout)
         else:
-            exit_ip, cc, country = _check_socks(proxy, judge, timeout)
+            exit_ip, cc, country = _check_socks(proxy, judge, timeout, connect_timeout)
     except Exception as exc:
         result.error = f"{type(exc).__name__}: {exc}"
         return result
@@ -216,9 +228,14 @@ def check_all(
     timeout: float = 8.0,
     workers: int = 200,
     my_ip: str = "",
+    connect_timeout: float | None = None,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> list[Result]:
-    """Check proxies in parallel, returning only the live ones sorted by latency.
+    """Check proxies in parallel, returning every result, live ones first.
+
+    Failures are included so the store can mark them ``dead`` and skip them on
+    later runs. Live results come first, sorted by latency; failures follow.
+    Callers that only want live proxies filter with ``[r for r in results if r.ok]``.
 
     ``on_progress(done, total)`` (when given) is called after each finished check
     for a live counter in the UI.
@@ -226,12 +243,11 @@ def check_all(
     total = len(proxies)
     results: list[Result] = []
     with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
-        futures = [ex.submit(check_one, p, judge, timeout, my_ip) for p in proxies]
+        futures = [ex.submit(check_one, p, judge, timeout, my_ip, connect_timeout) for p in proxies]
         for done, fut in enumerate(as_completed(futures), start=1):
-            res = fut.result()
-            if res.ok:
-                results.append(res)
+            results.append(fut.result())
             if on_progress is not None:
                 on_progress(done, total)
-    results.sort(key=lambda r: r.latency_ms)
+    # Live first (by latency), then the failures.
+    results.sort(key=lambda r: (not r.ok, r.latency_ms))
     return results

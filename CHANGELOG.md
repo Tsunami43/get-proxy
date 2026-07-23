@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- Dropped proxies are now actually recorded as `dead`. `check_all` used to
+  discard every failed check, so `--recheck` never persisted a `dead` status and
+  the "no longer checked" promise was not kept. Failures now flow to the store.
+
+### Changed
+- Preload and `--get` skip known-dead proxies before checking, so accumulated
+  `dead` records make every subsequent run faster instead of re-testing corpses.
+- Split TCP connect from read timeout for SOCKS checks (`--connect-timeout`,
+  default 5s). Dead proxies fail at connect and are dropped sooner without
+  shortening the read budget for proxies that answer.
+- `record_many` commits once per batch instead of once per proxy (thousands of
+  fsyncs → one), which matters now that failures are recorded too.
+
 ## [0.2.0] - 2026-07-18
 
 ### Added

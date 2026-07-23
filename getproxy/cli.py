@@ -54,7 +54,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("-l", "--limit", type=int, default=0, help="max proxies per protocol (0 = all)")
 
     # Run parameters.
-    p.add_argument("-t", "--timeout", type=float, default=8.0, help="per-proxy check timeout, s (8)")
+    p.add_argument("-t", "--timeout", type=float, default=8.0, help="per-proxy read timeout, s (8)")
+    p.add_argument("--connect-timeout", type=float, default=5.0, help="per-proxy TCP connect timeout, s (5)")
     p.add_argument("--fetch-timeout", type=float, default=20.0, help="per-source fetch timeout, s (20)")
     p.add_argument("-w", "--workers", type=int, default=200, help="parallel checks (200)")
     p.add_argument("-j", "--judge", default=DEFAULT_JUDGE, help="http judge echoing IP+country")
@@ -139,7 +140,8 @@ def _save(out_dir: str, results: list[Result], r: Renderer) -> None:
 # --- modes ------------------------------------------------------------------
 
 def _mode_get(args, store, want, r) -> int:
-    ctx = Context.build(args.judge, timeout=args.timeout, workers=args.workers, max_fails=args.max_fails)
+    ctx = Context.build(args.judge, timeout=args.timeout, connect_timeout=args.connect_timeout,
+                        workers=args.workers, max_fails=args.max_fails)
     res = find_one(store, ctx, _filters(args, want))
     if args.json:
         json.dump(res.to_dict() if res else None, sys.stdout, ensure_ascii=False, indent=2)
@@ -152,7 +154,8 @@ def _mode_get(args, store, want, r) -> int:
 
 
 def _mode_recheck(args, store, r) -> int:
-    ctx = Context.build(args.judge, timeout=args.timeout, workers=args.workers, max_fails=args.max_fails)
+    ctx = Context.build(args.judge, timeout=args.timeout, connect_timeout=args.connect_timeout,
+                        workers=args.workers, max_fails=args.max_fails)
     cb = None if args.json else (lambda d, t: r.progress("recheck", d, t))
     out = recheck(store, ctx, on_progress=cb)
     if args.json:
@@ -195,8 +198,8 @@ def _mode_preload(args, store, want, r) -> int:
     if not args.json:
         r.banner()
         r.info(f"Fetching sources ({'all' if want is None else ', '.join(map(str, _order(want)))})…")
-    ctx = Context.build(args.judge, timeout=args.timeout, fetch_timeout=args.fetch_timeout,
-                        workers=args.workers, max_fails=args.max_fails)
+    ctx = Context.build(args.judge, timeout=args.timeout, connect_timeout=args.connect_timeout,
+                        fetch_timeout=args.fetch_timeout, workers=args.workers, max_fails=args.max_fails)
     if not args.json:
         r.info(f"My external IP: {ctx.my_ip or 'unknown'}  |  judge: {ctx.judge.url}")
 
@@ -218,7 +221,8 @@ def _mode_preload(args, store, want, r) -> int:
         r.line(f"\n  {'TOP WORKING (by latency)':<40}\n  {'-' * 60}")
         for res in alive[:25]:
             r.result_line(str(res), ok=True)
-        r.line(f"\n  Total alive: {len(alive)}  (saved to the store)")
+        skipped = f"  (skipped {out.skipped_dead} known-dead)" if out.skipped_dead else ""
+        r.line(f"\n  Total alive: {len(alive)}  (saved to the store){skipped}")
     if args.out:
         _save(args.out, alive, r)
     return 0
@@ -241,6 +245,7 @@ def run(argv: list[str]) -> int:
         if _wants_menu(args):
             from .menu import Menu
             return Menu(store, args.judge, timeout=args.timeout,
+                        connect_timeout=args.connect_timeout,
                         workers=args.workers, max_fails=args.max_fails).run()
         if args.get:
             return _mode_get(args, store, want, r)

@@ -80,10 +80,11 @@ class Menu:
     """State and loop of the interactive menu."""
 
     def __init__(self, store: Store, judge_url: str, *, timeout: float = 8.0,
-                 workers: int = 200, max_fails: int = 1) -> None:
+                 connect_timeout: float = 5.0, workers: int = 200, max_fails: int = 1) -> None:
         self.store = store
         self.judge_url = judge_url
         self.timeout = timeout
+        self.connect_timeout = connect_timeout
         self.workers = workers
         self.max_fails = max_fails
         self._ctx: Context | None = None
@@ -93,6 +94,7 @@ class Menu:
         if self._ctx is None:
             print(tui.color(tui.MUTED, "  Resolving external IP…"))
             self._ctx = Context.build(self.judge_url, timeout=self.timeout,
+                                       connect_timeout=self.connect_timeout,
                                        workers=self.workers, max_fails=self.max_fails)
             print(tui.color(tui.MUTED, f"  My IP: {self._ctx.my_ip or 'unknown'}"))
         return self._ctx
@@ -157,11 +159,14 @@ class Menu:
             on_progress=lambda proto, d, t: _progress(f"check {proto}")(d, t),
         )
         alive = [r for r in out.results if r.ok]
-        print(tui.panel("preload", [
+        panel_lines = [
             f"{tui.color(tui.MUTED, 'checked ')}{out.checked}",
             f"{tui.color(tui.GOOD, 'alive   ')}{len(alive)}",
-            f"{tui.color(tui.MUTED, 'all saved to the store')}",
-        ]))
+        ]
+        if out.skipped_dead:
+            panel_lines.append(f"{tui.color(tui.MUTED, 'skipped ')}{out.skipped_dead} known-dead")
+        panel_lines.append(tui.color(tui.MUTED, 'all saved to the store'))
+        print(tui.panel("preload", panel_lines))
         if alive:
             _print_table([r.proxy for r in alive[:15]], self.store, "top alive")
         tui.pause()
