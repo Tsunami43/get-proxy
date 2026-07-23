@@ -12,6 +12,9 @@ venv/
 env/
 .pytest_cache/
 
+# uv: the project has no runtime dependencies, so the lock pins nothing
+uv.lock
+
 # Editor / OS
 .idea/
 .vscode/
