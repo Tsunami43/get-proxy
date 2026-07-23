@@ -1,10 +1,15 @@
 """Tests for the persistent store: statuses, filters, dead logic."""
 
+import os
+import shutil
+import sqlite3
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 
 from getproxy.proxy import Protocol, Proxy, Result
 from getproxy.store import (
+    _SCHEMA,
     STATUS_DEAD,
     STATUS_UNKNOWN,
     STATUS_WORKING,
@@ -101,6 +106,68 @@ class TestStore(unittest.TestCase):
         row = self.store.details(p.key)
         self.assertEqual(row["fail_count"], 0)
         self.assertEqual(row["status"], STATUS_WORKING)
+
+
+class TestSchemaMigration(unittest.TestCase):
+    """An older store must survive an upgrade instead of needing deletion."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "old.db")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _make_pre_https_db(self):
+        """Build a store with the 0.2.0 schema — no https column."""
+        db = sqlite3.connect(self.path)
+        db.executescript(_SCHEMA.replace("    https        INTEGER NOT NULL DEFAULT 0,\n", ""))
+        db.execute(
+            "INSERT INTO proxies(key,protocol,host,port,status,first_seen,last_seen) "
+            "VALUES('http|1.2.3.4:8080','http','1.2.3.4',8080,'working','x','x')")
+        db.commit()
+        db.close()
+
+    def test_adds_the_missing_column(self):
+        self._make_pre_https_db()
+        with Store(self.path) as store:
+            cols = {r["name"] for r in store.db.execute("PRAGMA table_info(proxies)")}
+        self.assertIn("https", cols)
+
+    def test_keeps_existing_rows(self):
+        self._make_pre_https_db()
+        with Store(self.path) as store:
+            self.assertEqual(store.total(), 1)
+            self.assertEqual(store.details("http|1.2.3.4:8080")["https"], 0)
+
+    def test_is_idempotent(self):
+        self._make_pre_https_db()
+        Store(self.path).close()
+        Store(self.path).close()  # must not raise "duplicate column name"
+        with Store(self.path) as store:
+            self.assertEqual(store.total(), 1)
+
+
+class TestHttpsFilter(unittest.TestCase):
+    def setUp(self):
+        self.store = Store(":memory:")
+
+    def tearDown(self):
+        self.store.close()
+
+    def test_filters_to_tls_capable_only(self):
+        tls, plain = _proxy("1.1.1.1"), _proxy("2.2.2.2")
+        self.store.record(Result(proxy=tls, ok=True, latency_ms=10, exit_ip="9.9.9.9", https=True))
+        self.store.record(Result(proxy=plain, ok=True, latency_ms=10, exit_ip="9.9.9.9"))
+        got = self.store.query(Filters(https_only=True))
+        self.assertEqual([p.key for p in got], [tls.key])
+
+    def test_best_keeps_every_filter(self):
+        # Regression: best() used to rebuild Filters positionally, so a new
+        # field silently shifted the others by one.
+        plain = _proxy("2.2.2.2")
+        self.store.record(Result(proxy=plain, ok=True, latency_ms=10, exit_ip="9.9.9.9"))
+        self.assertIsNone(self.store.best(Filters(https_only=True)))
 
 
 class TestJudgeErrorIsNotProxyFailure(unittest.TestCase):

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import socket
+import ssl
 import time
 import urllib.error
 import urllib.request
@@ -37,6 +38,11 @@ DEFAULT_JUDGE = "http://ip-api.com/json/?fields=status,query,countryCode,country
 
 # Fallback judge without geo data — echoes a bare IPv4.
 FALLBACK_JUDGE = "http://api.ipify.org/"
+
+# Target for the optional TLS probe. The judge is plain HTTP (ip-api serves TLS
+# only on its paid tier), so verifying CONNECT needs a separate https endpoint;
+# this one is tiny, unauthenticated and almost universally reachable.
+DEFAULT_HTTPS_TARGET = "https://www.cloudflare.com/cdn-cgi/trace"
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,8 +219,40 @@ def _check_http(proxy: Proxy, judge: Judge, timeout: float) -> tuple[str, str, s
         raise
 
 
+def _probe_https(proxy: Proxy, target: str, timeout: float, connect_timeout: float) -> None:
+    """Raise unless the proxy can carry a TLS session to ``target``.
+
+    Plain-HTTP relaying says nothing about CONNECT: a proxy can happily forward
+    port 80 and refuse 443, which is the case users actually care about. The
+    handshake completing is the whole assertion — the response body is ignored.
+    """
+    parts = urlsplit(target)
+    host = parts.hostname or ""
+    port = parts.port or 443
+    ssl_ctx = ssl.create_default_context()
+
+    if proxy.protocol is Protocol.HTTP:
+        handler = urllib.request.ProxyHandler({"https": f"http://{proxy.addr}"})
+        opener = urllib.request.build_opener(handler)
+        req = urllib.request.Request(target, headers={"User-Agent": _USER_AGENT})
+        with opener.open(req, timeout=timeout) as resp:  # noqa: S310
+            resp.read(512)
+        return
+
+    with socket.create_connection((proxy.host, proxy.port), timeout=connect_timeout) as sock:
+        sock.settimeout(timeout)
+        if proxy.protocol is Protocol.SOCKS5:
+            _socks5_connect(sock, host, port)
+        else:
+            _socks4_connect(sock, host, port)
+        # wrap_socket performs the handshake; a refused CONNECT fails before it.
+        with ssl_ctx.wrap_socket(sock, server_hostname=host):
+            pass
+
+
 def check_one(proxy: Proxy, judge: Judge, timeout: float, my_ip: str = "",
-              connect_timeout: float | None = None) -> Result:
+              connect_timeout: float | None = None, *,
+              https_target: str = "") -> Result:
     """Check a single proxy and return a :class:`Result` with latency and exit IP.
 
     ``connect_timeout`` bounds the TCP connect for SOCKS proxies; it falls back
@@ -249,6 +287,15 @@ def check_one(proxy: Proxy, judge: Judge, timeout: float, my_ip: str = "",
     result.country_code = cc
     result.country = country
     result.anonymous = bool(my_ip) and exit_ip != my_ip
+
+    if https_target:
+        try:
+            _probe_https(proxy, https_target, timeout, connect_timeout)
+            result.https = True
+        except Exception:
+            # Plain HTTP still works, so the proxy stays ok — it just cannot
+            # be trusted with TLS, which the https flag now records.
+            result.https = False
     return result
 
 
@@ -260,6 +307,7 @@ def check_all(
     workers: int = 200,
     my_ip: str = "",
     connect_timeout: float | None = None,
+    https_target: str = "",
     on_progress: Callable[[int, int], None] | None = None,
 ) -> list[Result]:
     """Check proxies in parallel, returning every result, live ones first.
@@ -274,7 +322,8 @@ def check_all(
     total = len(proxies)
     results: list[Result] = []
     with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
-        futures = [ex.submit(check_one, p, judge, timeout, my_ip, connect_timeout) for p in proxies]
+        futures = [ex.submit(check_one, p, judge, timeout, my_ip, connect_timeout,
+                             https_target=https_target) for p in proxies]
         for done, fut in enumerate(as_completed(futures), start=1):
             results.append(fut.result())
             if on_progress is not None:

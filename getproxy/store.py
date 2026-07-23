@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 from .proxy import Protocol, Proxy, Result
@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS proxies (
     country      TEXT NOT NULL DEFAULT '',
     exit_ip      TEXT NOT NULL DEFAULT '',
     anonymous    INTEGER NOT NULL DEFAULT 0,
+    https        INTEGER NOT NULL DEFAULT 0,
     latency_ms   INTEGER NOT NULL DEFAULT 0,
     fail_count   INTEGER NOT NULL DEFAULT 0,
     first_seen   TEXT NOT NULL,
@@ -41,6 +42,12 @@ CREATE INDEX IF NOT EXISTS idx_status  ON proxies(status);
 CREATE INDEX IF NOT EXISTS idx_country ON proxies(country_code);
 CREATE INDEX IF NOT EXISTS idx_proto   ON proxies(protocol);
 """
+
+# Columns introduced after 0.2.0, applied to older stores by Store._migrate.
+# Append here when the schema grows; never reorder or remove.
+_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("https", "https INTEGER NOT NULL DEFAULT 0"),
+)
 
 
 def default_path() -> str:
@@ -63,6 +70,7 @@ class Filters:
     protocols: set[Protocol] | None = None
     country_code: str = ""       # ISO code, e.g. "RU" (case-insensitive)
     anonymous_only: bool = False
+    https_only: bool = False     # only proxies whose TLS probe succeeded
     max_latency_ms: int = 0      # 0 = no limit
     limit: int = 0               # 0 = no limit
 
@@ -81,7 +89,20 @@ class Store:
         self.db = sqlite3.connect(self.path)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(_SCHEMA)
+        self._migrate()
         self.db.commit()
+
+    def _migrate(self) -> None:
+        """Add columns missing from a database created by an older version.
+
+        ``CREATE TABLE IF NOT EXISTS`` leaves an existing table alone, so new
+        columns have to be added explicitly or every upgrade would need the user
+        to delete their store.
+        """
+        have = {row["name"] for row in self.db.execute("PRAGMA table_info(proxies)")}
+        for column, ddl in _ADDED_COLUMNS:
+            if column not in have:
+                self.db.execute(f"ALTER TABLE proxies ADD COLUMN {ddl}")
 
     def close(self) -> None:
         self.db.close()
@@ -141,9 +162,10 @@ class Store:
         if result.ok:
             self.db.execute(
                 "UPDATE proxies SET status=?, country_code=?, country=?, exit_ip=?, "
-                "anonymous=?, latency_ms=?, fail_count=0, last_checked=?, last_ok=? WHERE key=?",
+                "anonymous=?, https=?, latency_ms=?, fail_count=0, last_checked=?, last_ok=? "
+                "WHERE key=?",
                 (STATUS_WORKING, result.country_code, result.country, result.exit_ip,
-                 int(result.anonymous), result.latency_ms, now, now, p.key),
+                 int(result.anonymous), int(result.https), result.latency_ms, now, now, p.key),
             )
             return STATUS_WORKING
 
@@ -224,6 +246,8 @@ class Store:
             params.append(filters.country_code.upper())
         if filters.anonymous_only:
             where.append("anonymous = 1")
+        if filters.https_only:
+            where.append("https = 1")
         if filters.max_latency_ms > 0:
             where.append("latency_ms > 0 AND latency_ms <= ?")
             params.append(filters.max_latency_ms)
@@ -250,8 +274,7 @@ class Store:
 
     def best(self, filters: Filters) -> Proxy | None:
         """Best working proxy under the filters (lowest latency) or None."""
-        f = Filters(filters.protocols, filters.country_code, filters.anonymous_only,
-                    filters.max_latency_ms, 1)
+        f = replace(filters, limit=1)
         rows = self.query(f)
         return rows[0] if rows else None
 

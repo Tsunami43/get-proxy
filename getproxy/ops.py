@@ -29,16 +29,19 @@ class Context:
     workers: int = 200
     max_fails: int = 3
     revive_days: int = 7
+    # Empty = skip the TLS probe entirely (it doubles the work per proxy).
+    https_target: str = ""
 
     @classmethod
     def build(cls, judge_url: str = DEFAULT_JUDGE, *, timeout: float = 8.0,
               connect_timeout: float = 5.0, fetch_timeout: float = 20.0,
-              workers: int = 200, max_fails: int = 3, revive_days: int = 7) -> "Context":
+              workers: int = 200, max_fails: int = 3, revive_days: int = 7,
+              https_target: str = "") -> "Context":
         judge = Judge.parse(judge_url)
         return cls(judge=judge, my_ip=local_ip(judge, timeout),
                    timeout=timeout, connect_timeout=connect_timeout,
                    fetch_timeout=fetch_timeout, workers=workers, max_fails=max_fails,
-                   revive_days=revive_days)
+                   revive_days=revive_days, https_target=https_target)
 
 
 @dataclass(slots=True)
@@ -99,7 +102,8 @@ def preload(
         cb = (lambda d, t, _p=proto: on_progress(_p, d, t)) if on_progress else None
         results = check_all(proxies, ctx.judge, timeout=ctx.timeout,
                             connect_timeout=ctx.connect_timeout,
-                            workers=ctx.workers, my_ip=ctx.my_ip, on_progress=cb)
+                            workers=ctx.workers, my_ip=ctx.my_ip,
+                            https_target=ctx.https_target, on_progress=cb)
         store.record_many(results, max_fails=ctx.max_fails)
         out.checked += len(proxies)
         out.results.extend(results)
@@ -131,7 +135,8 @@ def recheck(
 
     results = check_all(proxies, ctx.judge, timeout=ctx.timeout,
                         connect_timeout=ctx.connect_timeout,
-                        workers=ctx.workers, my_ip=ctx.my_ip, on_progress=on_progress)
+                        workers=ctx.workers, my_ip=ctx.my_ip,
+                        https_target=ctx.https_target, on_progress=on_progress)
     store.record_many(results, max_fails=ctx.max_fails)
     ok_keys = {r.proxy.key for r in results if r.ok}
 
@@ -155,7 +160,8 @@ def find_one(
     # 1) Candidate from the store.
     best = store.best(filters)
     if best is not None:
-        res = check_one(best, ctx.judge, ctx.timeout, ctx.my_ip, ctx.connect_timeout)
+        res = check_one(best, ctx.judge, ctx.timeout, ctx.my_ip, ctx.connect_timeout,
+                        https_target=ctx.https_target)
         store.record(res, max_fails=ctx.max_fails)
         if res.ok and _matches(res, filters):
             return res
@@ -174,7 +180,8 @@ def find_one(
         batch = candidates[i:i + scan_batch]
         results = check_all(batch, ctx.judge, timeout=ctx.timeout,
                             connect_timeout=ctx.connect_timeout,
-                            workers=ctx.workers, my_ip=ctx.my_ip)
+                            workers=ctx.workers, my_ip=ctx.my_ip,
+                            https_target=ctx.https_target)
         store.record_many(results, max_fails=ctx.max_fails)
         scanned += len(batch)
         if on_scan:
@@ -191,6 +198,8 @@ def _matches(res: Result, filters: Filters) -> bool:
     if filters.country_code and res.country_code.upper() != filters.country_code.upper():
         return False
     if filters.anonymous_only and not res.anonymous:
+        return False
+    if filters.https_only and not res.https:
         return False
     if filters.max_latency_ms > 0 and res.latency_ms > filters.max_latency_ms:
         return False

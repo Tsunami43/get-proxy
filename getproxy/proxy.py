@@ -133,6 +133,8 @@ class Result:
     country_code: str = ""
     country: str = ""
     anonymous: bool = False
+    # Verified to carry a TLS session (only set when the probe ran).
+    https: bool = False
     error: str = ""
     # The judge failed, not the proxy (rate limit, error payload). Such a result
     # must not count towards fail_count — see Store._apply.
@@ -151,6 +153,7 @@ class Result:
             "country_code": self.country_code,
             "country": self.country,
             "anonymous": self.anonymous,
+            "https": self.https,
             "error": self.error,
         }
 
@@ -159,4 +162,5 @@ class Result:
             return f"{self.proxy.url:<25}  down ({self.error})"
         tag = "anonymous" if self.anonymous else "transparent"
         geo = f"[{self.country_code}] " if self.country_code else ""
-        return f"{self.proxy.url:<25}  {self.latency_ms:>5}ms  {tag:<11}  {geo}exit={self.exit_ip}"
+        tls = " tls" if self.https else ""
+        return f"{self.proxy.url:<25}  {self.latency_ms:>5}ms  {tag:<11}{tls}  {geo}exit={self.exit_ip}"
