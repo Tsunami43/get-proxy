@@ -70,6 +70,30 @@ def clear() -> None:
     sys.stdout.write("\033[2J\033[3J\033[H")
 
 
+# Synchronized Output (DEC private mode 2026): the terminal buffers everything
+# between the two markers and presents it as one frame. Terminals that do not
+# know the mode ignore it, so this is safe to send unconditionally.
+_SYNC_BEGIN = "\033[?2026h"
+_SYNC_END = "\033[?2026l"
+
+_HOME = "\033[H"          # cursor to top-left, without erasing
+_ERASE_LINE = "\033[K"    # erase from cursor to end of line
+_ERASE_BELOW = "\033[J"   # erase everything below the cursor
+
+
+def draw_frame(lines: list[str]) -> None:
+    """Repaint the screen from the top with one write.
+
+    Erasing the screen first and drawing afterwards makes the terminal show a
+    blank frame in between, which reads as a flicker on every keystroke. Instead
+    the cursor goes home and each line clears itself as it is overwritten, so
+    something is on screen at all times.
+    """
+    frame = _HOME + "".join(f"{ln}{_ERASE_LINE}\n" for ln in lines) + _ERASE_BELOW
+    sys.stdout.write(_SYNC_BEGIN + frame + _SYNC_END)
+    sys.stdout.flush()
+
+
 # --- boxes ------------------------------------------------------------------
 
 def panel(title: str, lines: list[str], *, width: int = 0, accent: str = ACCENT) -> str:
@@ -172,9 +196,6 @@ def select(title: str, options: list[Option], *, subtitle: str = "",
 
 
 def _render(title: str, options: list[Option], idx: int, subtitle: str, header: str) -> None:
-    clear()
-    if header:
-        sys.stdout.write(color(ACCENT + BOLD, header) + "\n")
     labelw = max(visible_len(o.label) for o in options)
     lines: list[str] = []
     if subtitle:
@@ -191,9 +212,13 @@ def _render(title: str, options: list[Option], idx: int, subtitle: str, header: 
             label = color(TEXT, label)
             hint = color(MUTED, opt.hint)
         lines.append(f"{pointer}  {label}   {hint}")
-    sys.stdout.write(panel(title, lines) + "\n")
-    sys.stdout.write(color(MUTED, "  ↑/↓ move · enter select · q quit") + "\n")
-    sys.stdout.flush()
+
+    frame: list[str] = []
+    if header:
+        frame.append(color(ACCENT + BOLD, header))
+    frame.extend(panel(title, lines).split("\n"))
+    frame.append(color(MUTED, "  ↑/↓ move · enter select · q quit"))
+    draw_frame(frame)
 
 
 def _select_fallback(title: str, options: list[Option], subtitle: str) -> int | None:
