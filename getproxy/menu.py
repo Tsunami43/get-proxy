@@ -7,6 +7,7 @@ plain stdout between menu screens (raw mode is only enabled while navigating).
 from __future__ import annotations
 
 import sys
+from typing import Callable
 
 from . import tui
 from .ops import Context, find_one, preload, recheck
@@ -79,23 +80,18 @@ def _pick_protocols() -> set[Protocol] | None:
 class Menu:
     """State and loop of the interactive menu."""
 
-    def __init__(self, store: Store, judge_url: str, *, timeout: float = 8.0,
-                 connect_timeout: float = 5.0, workers: int = 200, max_fails: int = 3) -> None:
+    def __init__(self, store: Store, build_ctx: Callable[[], Context]) -> None:
+        # A factory, not a copy of every Context knob: mirroring the parameters
+        # here is what let the menu drift out of sync with the CLI.
         self.store = store
-        self.judge_url = judge_url
-        self.timeout = timeout
-        self.connect_timeout = connect_timeout
-        self.workers = workers
-        self.max_fails = max_fails
+        self._build_ctx = build_ctx
         self._ctx: Context | None = None
 
     def ctx(self) -> Context:
         """Build the check context (resolving our IP) once."""
         if self._ctx is None:
             print(tui.color(tui.MUTED, "  Resolving external IP…"))
-            self._ctx = Context.build(self.judge_url, timeout=self.timeout,
-                                       connect_timeout=self.connect_timeout,
-                                       workers=self.workers, max_fails=self.max_fails)
+            self._ctx = self._build_ctx()
             print(tui.color(tui.MUTED, f"  My IP: {self._ctx.my_ip or 'unknown'}"))
         return self._ctx
 

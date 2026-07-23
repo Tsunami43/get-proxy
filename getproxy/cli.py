@@ -91,6 +91,19 @@ def _https_target(args: argparse.Namespace) -> str:
     return args.https_target if (args.verify_https or args.https_only) else ""
 
 
+def _context(args: argparse.Namespace) -> Context:
+    """The one place run parameters become a Context.
+
+    Every mode and the menu go through here, so a new knob is wired once
+    instead of at each call site.
+    """
+    return Context.build(
+        args.judge, timeout=args.timeout, connect_timeout=args.connect_timeout,
+        fetch_timeout=args.fetch_timeout, workers=args.workers,
+        max_fails=args.max_fails, revive_days=args.revive_after,
+        https_target=_https_target(args), anon_judge_url=_anon_judge(args))
+
+
 def _anon_judge(args: argparse.Namespace) -> str:
     """The header-echoing judge URL, or "" when grading is off."""
     return args.anon_judge if (args.check_anonymity or args.elite) else ""
@@ -168,10 +181,7 @@ def _save(out_dir: str, results: list[Result], r: Renderer) -> None:
 # --- modes ------------------------------------------------------------------
 
 def _mode_get(args, store, want, r) -> int:
-    ctx = Context.build(args.judge, timeout=args.timeout, connect_timeout=args.connect_timeout,
-                        workers=args.workers, max_fails=args.max_fails, revive_days=args.revive_after,
-                        https_target=_https_target(args),
-                        anon_judge_url=_anon_judge(args))
+    ctx = _context(args)
     res = find_one(store, ctx, _filters(args, want))
     if args.raw:
         # Nothing but the URL on stdout, so `export HTTP_PROXY=$(getproxy -g --raw)`
@@ -189,10 +199,7 @@ def _mode_get(args, store, want, r) -> int:
 
 
 def _mode_recheck(args, store, r) -> int:
-    ctx = Context.build(args.judge, timeout=args.timeout, connect_timeout=args.connect_timeout,
-                        workers=args.workers, max_fails=args.max_fails, revive_days=args.revive_after,
-                        https_target=_https_target(args),
-                        anon_judge_url=_anon_judge(args))
+    ctx = _context(args)
     cb = None if args.json else (lambda d, t: r.progress("recheck", d, t))
     out = recheck(store, ctx, on_progress=cb)
     if args.json:
@@ -236,11 +243,7 @@ def _mode_preload(args, store, want, r) -> int:
     if not quiet:
         r.banner()
         r.info(f"Fetching sources ({'all' if want is None else ', '.join(map(str, _order(want)))})…")
-    ctx = Context.build(args.judge, timeout=args.timeout, connect_timeout=args.connect_timeout,
-                        fetch_timeout=args.fetch_timeout, workers=args.workers,
-                        max_fails=args.max_fails, revive_days=args.revive_after,
-                        https_target=_https_target(args),
-                        anon_judge_url=_anon_judge(args))
+    ctx = _context(args)
     if not quiet:
         r.info(f"My external IP: {ctx.my_ip or 'unknown'}  |  judge: {ctx.judge.url}")
 
@@ -288,11 +291,7 @@ def run(argv: list[str]) -> int:
             return 0
         if _wants_menu(args):
             from .menu import Menu
-            return Menu(store, args.judge, timeout=args.timeout,
-                        connect_timeout=args.connect_timeout,
-                        workers=args.workers, max_fails=args.max_fails, revive_days=args.revive_after,
-                        https_target=_https_target(args),
-                        anon_judge_url=_anon_judge(args)).run()
+            return Menu(store, lambda: _context(args)).run()
         if args.get:
             return _mode_get(args, store, want, r)
         if args.recheck:

@@ -79,5 +79,45 @@ class TestOtherOutputModes(unittest.TestCase):
         self.assertFalse(cli._wants_menu(args))
 
 
+class TestMenuLaunch(unittest.TestCase):
+    """The menu path needs a TTY, so nothing else here exercises it.
+
+    Regression: run() passed Context knobs straight to Menu(), which does not
+    take them, and every menu launch died with TypeError.
+    """
+
+    def _launch(self, argv):
+        with mock.patch.object(cli, "_wants_menu", return_value=True), \
+             mock.patch("getproxy.menu.Menu.run", return_value=0) as run, \
+             redirect_stdout(io.StringIO()):
+            code = cli.run([*argv, "--db", ":memory:"])
+        return code, run
+
+    def test_bare_run_constructs_the_menu(self):
+        code, run = self._launch([])
+        self.assertEqual(code, 0)
+        run.assert_called_once()
+
+    def test_every_run_flag_is_accepted_on_the_menu_path(self):
+        # Whatever the CLI accepts, the menu must be constructible with.
+        code, _ = self._launch([
+            "--max-fails", "5", "--revive-after", "2", "--verify-https",
+            "--check-anonymity", "-t", "3", "--connect-timeout", "2",
+            "--fetch-timeout", "9", "-w", "10",
+        ])
+        self.assertEqual(code, 0)
+
+    def test_the_context_factory_carries_the_flags(self):
+        args = cli._parse_args(["--max-fails", "5", "--revive-after", "2",
+                                "--verify-https", "--check-anonymity"])
+        with mock.patch.object(cli, "Context") as ctx:
+            cli._context(args)
+        kw = ctx.build.call_args.kwargs
+        self.assertEqual(kw["max_fails"], 5)
+        self.assertEqual(kw["revive_days"], 2)
+        self.assertTrue(kw["https_target"])
+        self.assertTrue(kw["anon_judge_url"])
+
+
 if __name__ == "__main__":
     unittest.main()
