@@ -49,6 +49,7 @@ class PreloadResult:
     checked: int = 0
     skipped_dead: int = 0
     revived: int = 0
+    new_seen: int = 0
     results: list[Result] = field(default_factory=list)
 
 
@@ -72,6 +73,12 @@ def preload(
     out = PreloadResult(fetched=pool.total, feeds_ok=feeds_ok, feeds_total=len(pool.stats))
     if on_fetch_done:
         on_fetch_done(pool.total, feeds_ok, len(pool.stats))
+
+    # Everything the feeds carry goes into the store as ``unknown``, including
+    # what ``limit`` will cut from this run — otherwise a limited run throws away
+    # the rest of the pool and the next run has to re-fetch it to learn anything.
+    for proxies in pool.proxies.values():
+        out.new_seen += store.seen(proxies)
 
     # Give long-dead proxies another chance before we decide what to skip.
     out.revived = store.revive_dead(ctx.revive_days)
