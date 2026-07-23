@@ -61,11 +61,13 @@ def palette(enabled: bool) -> Palette:
 class Renderer:
     """Prints the banner, progress and results, honouring the colour setting."""
 
-    def __init__(self, color: bool = True, out=sys.stdout) -> None:
+    def __init__(self, color: bool = True, out=None) -> None:
+        # Resolved here, not in the signature: a default argument would capture
+        # sys.stdout at import time and ignore any later redirection.
+        self.out = out if out is not None else sys.stdout
         # Colour only on a TTY, without NO_COLOR and unless explicitly disabled.
-        self.color = color and is_tty(out) and os.environ.get("NO_COLOR", "") == ""
+        self.color = color and is_tty(self.out) and os.environ.get("NO_COLOR", "") == ""
         self.p = palette(self.color)
-        self.out = out
 
     def line(self, text: str = "") -> None:
         print(text, file=self.out)

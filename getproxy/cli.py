@@ -67,6 +67,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     # Output.
     p.add_argument("-o", "--out", metavar="DIR", help="save the result into a directory")
     p.add_argument("--json", action="store_true", help="JSON output")
+    p.add_argument("--raw", action="store_true",
+                   help="print bare proxy URLs, one per line (for $(...) and pipes)")
     p.add_argument("--no-color", action="store_true", help="disable colour")
     p.add_argument("-V", "--version", action="version", version=f"getproxy {__version__}")
     return p.parse_args(argv)
@@ -107,7 +109,7 @@ def _wants_menu(args: argparse.Namespace) -> bool:
     """Whether to open the interactive menu: a bare interactive run, no actions."""
     if args.menu:
         return True
-    if args.no_menu or args.json:
+    if args.no_menu or args.json or args.raw:
         return False
     action_flags = (args.get, args.recheck, args.no_check, args.purge_dead, bool(args.out))
     if any(action_flags):
@@ -145,7 +147,12 @@ def _mode_get(args, store, want, r) -> int:
     ctx = Context.build(args.judge, timeout=args.timeout, connect_timeout=args.connect_timeout,
                         workers=args.workers, max_fails=args.max_fails, revive_days=args.revive_after)
     res = find_one(store, ctx, _filters(args, want))
-    if args.json:
+    if args.raw:
+        # Nothing but the URL on stdout, so `export HTTP_PROXY=$(getproxy -g --raw)`
+        # works; the empty case stays silent and is signalled by the exit code.
+        if res is not None:
+            print(res.proxy.url)
+    elif args.json:
         json.dump(res.to_dict() if res else None, sys.stdout, ensure_ascii=False, indent=2)
         print()
     elif res is None:
@@ -197,23 +204,28 @@ def _mode_no_check(args, store, want, r) -> int:
 
 
 def _mode_preload(args, store, want, r) -> int:
-    if not args.json:
+    quiet = args.json or args.raw
+    if not quiet:
         r.banner()
         r.info(f"Fetching sources ({'all' if want is None else ', '.join(map(str, _order(want)))})…")
     ctx = Context.build(args.judge, timeout=args.timeout, connect_timeout=args.connect_timeout,
-                        fetch_timeout=args.fetch_timeout, workers=args.workers, max_fails=args.max_fails, revive_days=args.revive_after)
-    if not args.json:
+                        fetch_timeout=args.fetch_timeout, workers=args.workers,
+                        max_fails=args.max_fails, revive_days=args.revive_after)
+    if not quiet:
         r.info(f"My external IP: {ctx.my_ip or 'unknown'}  |  judge: {ctx.judge.url}")
 
     out = preload(
         store, ctx, want, limit=args.limit,
-        on_fetch_done=None if args.json else (
+        on_fetch_done=None if quiet else (
             lambda total, ok, all_: r.good(f"Collected {total} proxies from {ok}/{all_} feeds")),
-        on_progress=None if args.json else (lambda proto, d, t: r.progress(f"check {proto}", d, t)),
+        on_progress=None if quiet else (lambda proto, d, t: r.progress(f"check {proto}", d, t)),
     )
     alive = [x for x in out.results if x.ok]
 
-    if args.json:
+    if args.raw:
+        for res in alive:
+            print(res.proxy.url)
+    elif args.json:
         json.dump({
             "generated_at": _now(), "checked": True, "my_ip": ctx.my_ip, "judge": ctx.judge.url,
             "working": len(alive), "results": [x.to_dict() for x in alive],
@@ -232,7 +244,7 @@ def _mode_preload(args, store, want, r) -> int:
 
 def run(argv: list[str]) -> int:
     args = _parse_args(argv)
-    r = Renderer(color=not args.no_color and not args.json)
+    r = Renderer(color=not args.no_color and not args.json and not args.raw)
 
     if args.sources:
         _print_sources(r)
